@@ -4,9 +4,24 @@ import uuid
 import sqlite3
 import subprocess
 import threading
-from datetime import datetime
+import logging
+from datetime import datetime, timedelta
 from pathlib import Path
 from flask import Flask, request, jsonify, send_file, render_template
+
+# -- Logging Setup --
+LOG_DIR = Path(__file__).parent / "logs"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(LOG_DIR / "app.log"),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 200 * 1024 * 1024  # 200MB
@@ -28,28 +43,67 @@ def get_db():
 
 def init_db():
     with get_db() as conn:
+        # Create documents table with enhanced schema
         conn.execute("""
             CREATE TABLE IF NOT EXISTS documents (
                 id TEXT PRIMARY KEY,
-                original_name TEXT,
+                original_name TEXT NOT NULL,
+                file_size INTEGER,
                 pages INTEGER,
                 status TEXT DEFAULT 'processing',
                 error TEXT,
-                created_at TEXT,
-                output_path TEXT
+                created_at TEXT NOT NULL,
+                updated_at TEXT,
+                output_path TEXT,
+                processing_time_seconds REAL,
+                accessibility_features TEXT
             )
         """)
+        
+        # Create logs table for audit trail
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS operation_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id TEXT,
+                operation TEXT,
+                status TEXT,
+                message TEXT,
+                timestamp TEXT,
+                FOREIGN KEY (job_id) REFERENCES documents (id)
+            )
+        """)
+        
+        conn.commit()
+    logger.info("Database initialized")
 
 init_db()
 
 # -- Jobs dict for progress tracking --
 jobs = {}
 
-def process_pdf(job_id, input_path, output_path, original_name):
+def log_operation(job_id, operation, status, message=""):
+    """Log operation to database audit trail"""
     try:
+        with get_db() as conn:
+            conn.execute(
+                "INSERT INTO operation_logs (job_id, operation, status, message, timestamp) VALUES (?,?,?,?,?)",
+                (job_id, operation, status, message, datetime.now().isoformat())
+            )
+            conn.commit()
+    except Exception as e:
+        logger.error(f"Failed to log operation: {e}")
+
+def process_pdf(job_id, input_path, output_path, original_name, file_size):
+    """Process PDF and make it accessible"""
+    start_time = datetime.now()
+    
+    try:
+        logger.info(f"Starting processing for job {job_id}: {original_name}")
         jobs[job_id] = {'status': 'processing', 'progress': 10}
+        log_operation(job_id, 'start', 'in_progress')
 
         # Count pages first
+        logger.info(f"Analyzing PDF pages for job {job_id}")
         result = subprocess.run(
             ['python3', '-c',
              f"import pikepdf; pdf=pikepdf.open('{input_path}'); print(len(pdf.pages))"],
@@ -57,11 +111,13 @@ def process_pdf(job_id, input_path, output_path, original_name):
         )
         pages = int(result.stdout.strip()) if result.returncode == 0 else 0
         jobs[job_id]['progress'] = 30
+        log_operation(job_id, 'count_pages', 'success', f'Pages: {pages}')
 
         # Extract title from filename
         title = Path(original_name).stem.replace('-', ' ').replace('_', ' ')
 
         # Run accessibility script
+        logger.info(f"Running accessibility script for job {job_id}")
         cmd = [
             'python3', str(SCRIPT_PATH),
             '--input', str(input_path),
@@ -77,24 +133,54 @@ def process_pdf(job_id, input_path, output_path, original_name):
         jobs[job_id]['progress'] = 90
 
         if proc.returncode != 0:
-            raise Exception(proc.stderr or "שגיאה בעיבוד הקובץ")
+            error_msg = proc.stderr or "שגיאה בעיבוד הקובץ"
+            logger.error(f"Script error for job {job_id}: {error_msg}")
+            raise Exception(error_msg)
 
-        # Update DB
+        # Calculate processing time
+        processing_time = (datetime.now() - start_time).total_seconds()
+        
+        # Define accessibility features applied
+        accessibility_features = [
+            "OCR - זיהוי טקסט",
+            "תיוג PDF/UA",
+            "מטא-נתונים",
+            "סימן מים",
+            "שפה: עברית"
+        ]
+
+        # Update DB with comprehensive information
+        logger.info(f"Updating database for job {job_id}")
         with get_db() as conn:
             conn.execute(
-                "UPDATE documents SET status='done', pages=?, output_path=? WHERE id=?",
-                (pages, str(output_path), job_id)
+                """UPDATE documents SET 
+                   status='done', 
+                   pages=?, 
+                   output_path=?, 
+                   processing_time_seconds=?,
+                   accessibility_features=?,
+                   updated_at=?
+                   WHERE id=?""",
+                (pages, str(output_path), processing_time, json.dumps(accessibility_features), 
+                 datetime.now().isoformat(), job_id)
             )
+            conn.commit()
 
         jobs[job_id] = {'status': 'done', 'progress': 100}
+        log_operation(job_id, 'complete', 'success', f'Time: {processing_time:.1f}s')
+        logger.info(f"Successfully completed job {job_id}")
 
     except Exception as e:
+        logger.error(f"Error processing job {job_id}: {str(e)}")
         with get_db() as conn:
             conn.execute(
-                "UPDATE documents SET status='error', error=? WHERE id=?",
-                (str(e), job_id)
+                "UPDATE documents SET status='error', error=?, updated_at=? WHERE id=?",
+                (str(e), datetime.now().isoformat(), job_id)
             )
+            conn.commit()
         jobs[job_id] = {'status': 'error', 'error': str(e)}
+        log_operation(job_id, 'error', 'failed', str(e))
+        
     finally:
         if Path(input_path).exists():
             os.remove(input_path)
@@ -103,55 +189,124 @@ def process_pdf(job_id, input_path, output_path, original_name):
 # -- Routes --
 @app.route('/')
 def index():
+    """Serve the main application interface"""
+    logger.info("Serving index page")
     return render_template('index.html')
 
 @app.route('/api/upload', methods=['POST'])
 def upload():
+    """Upload a PDF file for accessibility processing
+    
+    Returns:
+        - 200: {job_id: str} - Job ID for tracking
+        - 400: {error: str} - Validation error
+    """
     if 'file' not in request.files:
-        return jsonify({'error': 'לא נבחר קובץ'}), 400
+        msg = 'לא נבחר קובץ'
+        logger.warning(f"Upload attempt without file: {request.remote_addr}")
+        return jsonify({'error': msg}), 400
 
     file = request.files['file']
     if not file.filename.lower().endswith('.pdf'):
-        return jsonify({'error': 'יש להעלות קובץ PDF בלבד'}), 400
+        msg = 'יש להעלות קובץ PDF בלבד'
+        logger.warning(f"Upload attempt with non-PDF: {file.filename}")
+        return jsonify({'error': msg}), 400
 
     job_id = str(uuid.uuid4())
     input_path = UPLOAD_DIR / f"{job_id}_input.pdf"
     output_path = OUTPUT_DIR / f"{job_id}_accessible.pdf"
-
+    
+    # Get file size
+    file_size = len(file.read())
+    file.seek(0)
     file.save(input_path)
+
+    logger.info(f"File uploaded: job_id={job_id}, filename={file.filename}, size={file_size} bytes")
 
     with get_db() as conn:
         conn.execute(
-            "INSERT INTO documents (id, original_name, status, created_at) VALUES (?,?,?,?)",
-            (job_id, file.filename, 'processing', datetime.now().strftime('%d/%m/%Y %H:%M'))
+            """INSERT INTO documents (id, original_name, file_size, status, created_at) 
+               VALUES (?,?,?,?,?)""",
+            (job_id, file.filename, file_size, 'processing', datetime.now().isoformat())
         )
+        conn.commit()
 
+    # Start background processing
     thread = threading.Thread(
         target=process_pdf,
-        args=(job_id, input_path, output_path, file.filename)
+        args=(job_id, input_path, output_path, file.filename, file_size)
     )
     thread.daemon = True
     thread.start()
 
+    logger.info(f"Processing started for job {job_id}")
     return jsonify({'job_id': job_id})
 
 @app.route('/api/status/<job_id>')
 def status(job_id):
+    """Get processing status and progress for a job
+    
+    Args:
+        job_id: UUID of the processing job
+    
+    Returns:
+        {status: str, progress: int, error?: str}
+    """
     job = jobs.get(job_id, {'status': 'processing', 'progress': 5})
     return jsonify(job)
 
-@app.route('/api/download/<job_id>')
-def download(job_id):
+@app.route('/api/document/<job_id>')
+def get_document(job_id):
+    """Get detailed information about a processed document
+    
+    Args:
+        job_id: UUID of the document
+    
+    Returns:
+        - 200: Document metadata including accessibility features
+        - 404: Document not found
+    """
+    logger.info(f"Fetching document details for job {job_id}")
     with get_db() as conn:
         row = conn.execute("SELECT * FROM documents WHERE id=?", (job_id,)).fetchone()
+    
+    if not row:
+        logger.warning(f"Document not found: {job_id}")
+        return jsonify({'error': 'מסמך לא נמצא'}), 404
+    
+    doc = dict(row)
+    if doc.get('accessibility_features'):
+        doc['accessibility_features'] = json.loads(doc['accessibility_features'])
+    
+    return jsonify(doc)
+
+@app.route('/api/download/<job_id>')
+def download(job_id):
+    """Download the processed accessible PDF file
+    
+    Args:
+        job_id: UUID of the document
+    
+    Returns:
+        - 200: PDF file
+        - 404: Document not found or not ready
+    """
+    logger.info(f"Download requested for job {job_id}")
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM documents WHERE id=?", (job_id,)).fetchone()
+    
     if not row or row['status'] != 'done':
+        logger.warning(f"Download failed - invalid status: {job_id}")
         return jsonify({'error': 'קובץ לא נמצא'}), 404
 
     output_path = Path(row['output_path'])
     if not output_path.exists():
+        logger.error(f"Output file not found on disk: {output_path}")
         return jsonify({'error': 'קובץ לא קיים בדיסק'}), 404
 
     original = Path(row['original_name']).stem
+    logger.info(f"Downloaded: {original} (job {job_id})")
+    
     return send_file(
         output_path,
         as_attachment=True,
@@ -161,22 +316,191 @@ def download(job_id):
 
 @app.route('/api/history')
 def history():
+    """Get list of all documents with processing history
+    
+    Returns:
+        [{document metadata}] - Last 100 documents
+    """
     with get_db() as conn:
         rows = conn.execute(
             "SELECT * FROM documents ORDER BY created_at DESC LIMIT 100"
         ).fetchall()
-    return jsonify([dict(r) for r in rows])
+    
+    docs = []
+    for r in rows:
+        doc = dict(r)
+        if doc.get('accessibility_features'):
+            doc['accessibility_features'] = json.loads(doc['accessibility_features'])
+        docs.append(doc)
+    
+    logger.info(f"History requested - returning {len(docs)} documents")
+    return jsonify(docs)
 
 @app.route('/api/delete/<job_id>', methods=['DELETE'])
 def delete(job_id):
+    """Delete a document and its processed output
+    
+    Args:
+        job_id: UUID of the document
+    
+    Returns:
+        {ok: bool}
+    """
+    logger.info(f"Delete requested for job {job_id}")
     with get_db() as conn:
         row = conn.execute("SELECT output_path FROM documents WHERE id=?", (job_id,)).fetchone()
         if row and row['output_path']:
             p = Path(row['output_path'])
             if p.exists():
                 p.unlink()
+                logger.info(f"Deleted output file: {p}")
         conn.execute("DELETE FROM documents WHERE id=?", (job_id,))
+        conn.commit()
+    
+    logger.info(f"Document deleted: {job_id}")
     return jsonify({'ok': True})
 
+@app.route('/api/stats')
+def get_stats():
+    """Get aggregate statistics about processed documents
+    
+    Returns:
+        {total: int, successful: int, success_rate: float, total_pages: int, total_size: int, today_count: int}
+    """
+    with get_db() as conn:
+        stats = conn.execute("""
+            SELECT 
+                COUNT(*) as total,
+                SUM(CASE WHEN status='done' THEN 1 ELSE 0 END) as successful,
+                SUM(pages) as total_pages,
+                SUM(file_size) as total_size,
+                AVG(processing_time_seconds) as avg_time
+            FROM documents
+        """).fetchone()
+        
+        today = datetime.now().date().isoformat()
+        today_count = conn.execute(
+            "SELECT COUNT(*) as count FROM documents WHERE date(created_at) = ?",
+            (today,)
+        ).fetchone()['count']
+    
+    total = stats['total'] or 0
+    successful = stats['successful'] or 0
+    success_rate = (successful / total * 100) if total > 0 else 0
+    
+    result = {
+        'total_documents': total,
+        'successful': successful,
+        'failed': total - successful,
+        'success_rate': round(success_rate, 1),
+        'total_pages': stats['total_pages'] or 0,
+        'total_size_mb': round((stats['total_size'] or 0) / (1024 * 1024), 2),
+        'avg_processing_time_seconds': round(stats['avg_time'] or 0, 1),
+        'documents_today': today_count
+    }
+    
+    logger.info(f"Stats retrieved: {result}")
+    return jsonify(result)
+
+@app.route('/api/health')
+def health_check():
+    """Health check endpoint for monitoring
+    
+    Returns:
+        {status: 'ok', timestamp: str, version: str}
+    """
+    return jsonify({
+        'status': 'ok',
+        'timestamp': datetime.now().isoformat(),
+        'version': '2.0',
+        'database': 'connected'
+    })
+
+@app.route('/api/docs')
+def api_docs():
+    """API Documentation endpoint
+    
+    Returns HTML with API endpoint documentation
+    """
+    docs_html = """
+    <!DOCTYPE html>
+    <html lang="he" dir="rtl">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>API Documentation</title>
+        <style>
+            body { font-family: 'Heebo', sans-serif; max-width: 900px; margin: 2rem auto; padding: 1rem; }
+            h1 { color: #1A4E8A; }
+            .endpoint { background: #f5f5f5; padding: 1rem; margin: 1rem 0; border-radius: 8px; border-left: 4px solid #1A4E8A; }
+            .method { font-weight: bold; color: #2563B0; }
+            .path { font-family: monospace; }
+            code { background: #eee; padding: 2px 6px; border-radius: 3px; }
+        </style>
+    </head>
+    <body>
+        <h1>📄 מערכת הנגשת מסמכים - API Documentation</h1>
+        
+        <div class="endpoint">
+            <div class="method">POST</div>
+            <div class="path">/api/upload</div>
+            <p>העלאת קובץ PDF להנגשה</p>
+            <p><strong>Returns:</strong> <code>{job_id: string}</code></p>
+        </div>
+        
+        <div class="endpoint">
+            <div class="method">GET</div>
+            <div class="path">/api/status/{job_id}</div>
+            <p>בדיקת מצב עיבוד</p>
+            <p><strong>Returns:</strong> <code>{status, progress, error?}</code></p>
+        </div>
+        
+        <div class="endpoint">
+            <div class="method">GET</div>
+            <div class="path">/api/document/{job_id}</div>
+            <p>קבלת מטא-נתונים של מסמך</p>
+            <p><strong>Returns:</strong> <code>{id, status, pages, accessibility_features[], ...}</code></p>
+        </div>
+        
+        <div class="endpoint">
+            <div class="method">GET</div>
+            <div class="path">/api/download/{job_id}</div>
+            <p>הורדת קובץ PDF מונגש</p>
+            <p><strong>Returns:</strong> Binary PDF file</p>
+        </div>
+        
+        <div class="endpoint">
+            <div class="method">GET</div>
+            <div class="path">/api/history</div>
+            <p>קבלת רשימת כל המסמכים</p>
+            <p><strong>Returns:</strong> <code>[{document metadata}, ...]</code></p>
+        </div>
+        
+        <div class="endpoint">
+            <div class="method">GET</div>
+            <div class="path">/api/stats</div>
+            <p>נתונים סטטיסטיים מצטברים</p>
+            <p><strong>Returns:</strong> <code>{total_documents, successful, success_rate, total_pages, total_size_mb, ...}</code></p>
+        </div>
+        
+        <div class="endpoint">
+            <div class="method">DELETE</div>
+            <div class="path">/api/delete/{job_id}</div>
+            <p>מחיקת מסמך</p>
+            <p><strong>Returns:</strong> <code>{ok: true}</code></p>
+        </div>
+        
+        <div class="endpoint">
+            <div class="method">GET</div>
+            <div class="path">/api/health</div>
+            <p>בדיקת בריאות המערכת</p>
+            <p><strong>Returns:</strong> <code>{status, timestamp, version}</code></p>
+        </div>
+    </body>
+    </html>
+    """
+    return docs_html, 200, {'Content-Type': 'text/html; charset=utf-8'}
+
 if __name__ == '__main__':
+    logger.info("Starting accessibility tool server")
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=False)

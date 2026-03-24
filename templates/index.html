@@ -67,7 +67,24 @@
     gap: 1.5rem;
   }
 
-  /* Upload card */
+  /* Stats bar */
+  .stats-bar {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 1rem;
+  }
+  .stat-card {
+    background: var(--white);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 1.25rem;
+  }
+  .stat-label { font-size: 11px; color: var(--gray-3); font-weight: 500; text-transform: uppercase; letter-spacing: .04em; margin-bottom: .5rem; }
+  .stat-value { font-size: 28px; font-weight: 600; color: var(--gray-1); }
+  .stat-sub { font-size: 12px; color: var(--gray-3); margin-top: 8px; }
+  .stat-icon { font-size: 24px; float: left; opacity: .3; }
+
+  /* Card styles */
   .card {
     background: var(--white);
     border-radius: var(--radius);
@@ -129,10 +146,11 @@
   .file-status { font-size: 12px; color: var(--gray-3); }
 
   .progress-wrap {
-    height: 6px;
+    height: 8px;
     background: var(--gray-4);
     border-radius: 99px;
     overflow: hidden;
+    margin-bottom: 8px;
   }
   .progress-bar {
     height: 100%;
@@ -142,10 +160,41 @@
     transition: width .4s ease;
   }
   .progress-label {
+    font-size: 12px;
+    color: var(--gray-3);
+    margin-bottom: 8px;
+  }
+  .progress-time {
     font-size: 11px;
     color: var(--gray-3);
-    margin-top: 6px;
     text-align: left;
+  }
+
+  /* Features list */
+  .features-list {
+    margin: 1rem 1.25rem;
+    padding: 1rem;
+    background: var(--blue-s);
+    border-radius: 8px;
+    display: none;
+  }
+  .features-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--blue);
+    margin-bottom: 8px;
+  }
+  .features-list-items {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .feature-tag {
+    font-size: 11px;
+    padding: 4px 8px;
+    background: white;
+    border-radius: 4px;
+    color: var(--blue);
   }
 
   /* Result box */
@@ -198,6 +247,194 @@
     padding: .75rem 1rem;
     border-bottom: 1px solid var(--gray-5);
     color: var(--gray-1);
+    vertical-align: middle;
+  }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: var(--bg); }
+
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    border-radius: 99px;
+    font-size: 11px;
+    font-weight: 500;
+  }
+  .badge-done    { background: var(--grn-s); color: var(--green); }
+  .badge-proc    { background: var(--blue-s); color: var(--blue-l); }
+  .badge-error   { background: var(--red-s); color: var(--red); }
+
+  .btn-sm {
+    padding: 4px 10px;
+    border-radius: 5px;
+    font-family: 'Heebo', sans-serif;
+    font-size: 12px;
+    cursor: pointer;
+    border: 1px solid var(--gray-4);
+    background: white;
+    color: var(--gray-2);
+    transition: all .15s;
+  }
+  .btn-sm:hover { background: var(--gray-5); }
+  .btn-sm.danger { color: var(--red); border-color: #FCA5A5; }
+  .btn-sm.danger:hover { background: var(--red-s); }
+  .btn-sm.primary { color: var(--blue-l); border-color: #93C5FD; }
+  .btn-sm.primary:hover { background: var(--blue-s); }
+
+  .actions { display: flex; gap: 6px; justify-content: flex-end; }
+
+  .empty-history {
+    text-align: center;
+    padding: 2.5rem;
+    color: var(--gray-3);
+    font-size: 13px;
+  }
+
+  /* Search */
+  .table-toolbar {
+    padding: .85rem 1.25rem;
+    border-bottom: 1px solid var(--gray-5);
+    display: flex;
+    align-items: center;
+    gap: .75rem;
+  }
+  .search-input {
+    flex: 1;
+    padding: .45rem .75rem;
+    border: 1px solid var(--gray-4);
+    border-radius: 6px;
+    font-family: 'Heebo', sans-serif;
+    font-size: 13px;
+    outline: none;
+    direction: rtl;
+  }
+  .search-input:focus { border-color: var(--blue-l); }
+
+  @media (max-width: 600px) {
+    .stats-bar { grid-template-columns: 1fr; }
+    main { padding: 1rem; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo-mark">נג</div>
+  <h1>מערכת הנגשת מסמכים</h1>
+  <span>עיריית אילת — מחלקה דיגיטלית</span>
+</header>
+
+<main>
+  <!-- Stats -->
+  <div class="stats-bar" id="stats-bar">
+    <div class="stat-card">
+      <div class="stat-icon">📚</div>
+      <div class="stat-label">סה"כ מסמכים</div>
+      <div class="stat-value" id="stat-total">—</div>
+      <div class="stat-sub">מאז ההתחלה</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-icon">📄</div>
+      <div class="stat-label">עמודים הונגשו</div>
+      <div class="stat-value" id="stat-pages">—</div>
+      <div class="stat-sub">עמודי PDF</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-icon">✓</div>
+      <div class="stat-label">הצלחה</div>
+      <div class="stat-value" id="stat-success-rate">—</div>
+      <div class="stat-sub">אחוז הצלחה</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-icon">⚡</div>
+      <div class="stat-label">היום</div>
+      <div class="stat-value" id="stat-today">—</div>
+      <div class="stat-sub">מסמכים חדשים</div>
+    </div>
+  </div>
+
+  <!-- Upload -->
+  <div class="card">
+    <div class="card-header">
+      <div class="card-icon icon-blue">📄</div>
+      <h2>העלאת מסמך להנגשה</h2>
+    </div>
+
+    <div class="drop-zone" id="drop-zone">
+      <div class="drop-icon">📂</div>
+      <p><strong onclick="document.getElementById('file-input').click()">לחצי לבחירת קובץ</strong> או גרור לכאן</p>
+      <small>PDF בלבד · עד 200MB</small>
+      <input type="file" id="file-input" accept=".pdf">
+    </div>
+
+    <div class="processing-box" id="processing-box">
+      <div class="file-row">
+        <span class="file-icon">📄</span>
+        <span class="file-name" id="proc-filename">—</span>
+        <span class="file-status" id="proc-status">מעבד...</span>
+      </div>
+      <div class="progress-wrap">
+        <div class="progress-bar" id="progress-bar"></div>
+      </div>
+      <div class="progress-label" id="progress-label">מתחיל עיבוד...</div>
+      <div class="progress-time" id="progress-time"></div>
+    </div>
+
+    <div id="features-list" class="features-list">
+      <div class="features-title">✨ תכונות הנגשה שהופעלו:</div>
+      <div class="features-list-items" id="features-items">
+        <span class="feature-tag">OCR - זיהוי טקסט</span>
+        <span class="feature-tag">תיוג PDF/UA</span>
+        <span class="feature-tag">מטא-נתונים</span>
+        <span class="feature-tag">סימן מים</span>
+        <span class="feature-tag">עברית RTL</span>
+      </div>
+    </div>
+
+    <div class="result-box" id="result-box">
+      <span class="result-icon" id="result-icon"></span>
+      <div class="result-text">
+        <p id="result-title"></p>
+        <small id="result-sub"></small>
+      </div>
+      <button class="btn-download" id="btn-download" style="display:none">⬇ הורדה</button>
+    </div>
+  </div>
+
+  <!-- History -->
+  <div class="card">
+    <div class="card-header">
+      <div class="card-icon icon-gray">🕓</div>
+      <h2>היסטוריית מסמכים</h2>
+    </div>
+
+    <div class="table-toolbar">
+      <input class="search-input" id="search-input" type="text" placeholder="חיפוש לפי שם מסמך..." oninput="filterHistory()">
+      <button class="btn-sm" onclick="loadHistory()">רענן</button>
+    </div>
+
+    <div class="history-wrap">
+      <table id="history-table">
+        <thead>
+          <tr>
+            <th>שם המסמך</th>
+            <th>תאריך</th>
+            <th>עמודים</th>
+            <th>זמן עיבוד</th>
+            <th>סטטוס</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="history-body">
+          <tr><td colspan="6"><div class="empty-history">טוען...</div></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</main>
+
+<script>
     vertical-align: middle;
   }
   tr:last-child td { border-bottom: none; }
@@ -382,6 +619,7 @@
 let currentJobId = null;
 let pollInterval = null;
 let allHistory = [];
+let currentStartTime = null;
 
 // --- Drop zone ---
 const dropZone = document.getElementById('drop-zone');
@@ -411,7 +649,10 @@ async function uploadFile(file) {
   document.getElementById('proc-filename').textContent = file.name;
   document.getElementById('proc-status').textContent = 'מעלה...';
   document.getElementById('result-box').style.display = 'none';
-  setProgress(5, 'מעלה קובץ...');
+  document.getElementById('features-list').style.display = 'none';
+  setProgress(5, 'מעלה קובץ...', '');
+  
+  currentStartTime = Date.now();
 
   const fd = new FormData();
   fd.append('file', file);
@@ -428,9 +669,12 @@ async function uploadFile(file) {
   }
 }
 
-function setProgress(pct, label) {
+function setProgress(pct, label, timeMsg) {
   document.getElementById('progress-bar').style.width = pct + '%';
   document.getElementById('progress-label').textContent = label;
+  if (timeMsg) {
+    document.getElementById('progress-time').textContent = timeMsg;
+  }
 }
 
 const LABELS = {
@@ -441,6 +685,13 @@ const LABELS = {
   90: 'מוסיף תיוג PDF/UA...',
   100:'הושלם!'
 };
+
+function formatTime(seconds) {
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.round(seconds % 60);
+  return `${mins}m ${secs}s`;
+}
 
 function pollStatus() {
   if (pollInterval) clearInterval(pollInterval);
@@ -453,7 +704,12 @@ function pollStatus() {
 
       const pct = data.progress || 5;
       const label = LABELS[pct] || `${pct}%`;
-      setProgress(pct, label);
+      
+      // Calculate elapsed time
+      const elapsed = (Date.now() - currentStartTime) / 1000;
+      const timeMsg = `⏱ זמן עבודה: ${formatTime(elapsed)}`;
+      
+      setProgress(pct, label, timeMsg);
 
       if (data.status === 'done') {
         clearInterval(pollInterval);
@@ -469,12 +725,16 @@ function pollStatus() {
 
 function showSuccess() {
   document.getElementById('processing-box').style.display = 'none';
+  
+  // Show features
+  document.getElementById('features-list').style.display = 'block';
+  
   const box = document.getElementById('result-box');
   box.className = 'result-box success';
   box.style.display = 'flex';
   document.getElementById('result-icon').textContent = '✅';
   document.getElementById('result-title').textContent = 'המסמך הונגש בהצלחה';
-  document.getElementById('result-sub').textContent = 'הקובץ עומד בתקן PDF/UA ו-IS 5568';
+  document.getElementById('result-sub').textContent = 'הקובץ עומד בתקן PDF/UA וIS 5568';
   const btn = document.getElementById('btn-download');
   btn.style.display = 'block';
   btn.onclick = () => window.location = `/api/download/${currentJobId}`;
@@ -484,7 +744,8 @@ function showSuccess() {
     dropZone.style.display = 'block';
     box.style.display = 'none';
     document.getElementById('processing-box').style.display = 'none';
-    setProgress(0, '');
+    document.getElementById('features-list').style.display = 'none';
+    setProgress(0, '', '');
     fileInput.value = '';
     currentJobId = null;
   }, 6000);
@@ -492,6 +753,7 @@ function showSuccess() {
 
 function showError(msg) {
   document.getElementById('processing-box').style.display = 'none';
+  document.getElementById('features-list').style.display = 'none';
   dropZone.style.display = 'block';
   const box = document.getElementById('result-box');
   box.className = 'result-box error';
@@ -508,25 +770,25 @@ async function loadHistory() {
     const res = await fetch('/api/history');
     allHistory = await res.json();
     renderHistory(allHistory);
-    updateStats(allHistory);
-  } catch(e) {}
+    updateStats();
+  } catch(e) {
+    console.error('Failed to load history:', e);
+  }
 }
 
 function renderHistory(docs) {
   const tbody = document.getElementById('history-body');
   if (!docs.length) {
-    tbody.innerHTML = '<tr><td colspan="5"><div class="empty-history">אין מסמכים עדיין</div></td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6"><div class="empty-history">אין מסמכים עדיין</div></td></tr>';
     return;
   }
-
-  const today = new Date().toLocaleDateString('he-IL');
 
   tbody.innerHTML = docs.map(d => {
     const badge = d.status === 'done'
       ? `<span class="badge badge-done">✓ הושלם</span>`
       : d.status === 'error'
-      ? `<span class="badge badge-error">שגיאה</span>`
-      : `<span class="badge badge-proc">מעבד...</span>`;
+      ? `<span class="badge badge-error">⚠ שגיאה</span>`
+      : `<span class="badge badge-proc">⟳ מעבד</span>`;
 
     const actions = d.status === 'done'
       ? `<button class="btn-sm primary" onclick="window.location='/api/download/${d.id}'">הורדה</button>
@@ -535,11 +797,20 @@ function renderHistory(docs) {
 
     const name = d.original_name.replace(/\.pdf$/i, '');
     const pages = d.pages ? `${d.pages} עמ'` : '—';
+    const time = d.processing_time_seconds ? formatTime(d.processing_time_seconds) : '—';
+
+    // Format date from ISO format
+    let dateStr = '—';
+    if (d.created_at) {
+      const date = new Date(d.created_at);
+      dateStr = date.toLocaleDateString('he-IL') + ' ' + date.toLocaleTimeString('he-IL', {hour: '2-digit', minute: '2-digit'});
+    }
 
     return `<tr>
       <td title="${d.original_name}">${name.length > 40 ? name.slice(0,40)+'…' : name}</td>
-      <td>${d.created_at || '—'}</td>
+      <td>${dateStr}</td>
       <td>${pages}</td>
+      <td>${time}</td>
       <td>${badge}</td>
       <td><div class="actions">${actions}</div></td>
     </tr>`;
@@ -558,20 +829,23 @@ async function deleteDoc(id) {
   loadHistory();
 }
 
-function updateStats(docs) {
-  const done = docs.filter(d => d.status === 'done');
-  const pages = done.reduce((s, d) => s + (d.pages || 0), 0);
-  const today = new Date().toLocaleDateString('he-IL');
-  const todayCount = done.filter(d => d.created_at && d.created_at.startsWith(today.split('/').reverse().join('/'))).length;
-
-  document.getElementById('stat-total').textContent = docs.length;
-  document.getElementById('stat-pages').textContent = pages.toLocaleString('he-IL');
-  document.getElementById('stat-today').textContent = todayCount;
+async function updateStats() {
+  try {
+    const res = await fetch('/api/stats');
+    const stats = await res.json();
+    
+    document.getElementById('stat-total').textContent = stats.total_documents;
+    document.getElementById('stat-pages').textContent = stats.total_pages.toLocaleString('he-IL');
+    document.getElementById('stat-success-rate').textContent = stats.success_rate + '%';
+    document.getElementById('stat-today').textContent = stats.documents_today;
+  } catch(e) {
+    console.error('Failed to update stats:', e);
+  }
 }
 
 // Init
 loadHistory();
-setInterval(loadHistory, 15000);
+setInterval(loadHistory, 20000);
 </script>
 </body>
 </html>
