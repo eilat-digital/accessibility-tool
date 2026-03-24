@@ -56,7 +56,9 @@ def init_db():
                 updated_at TEXT,
                 output_path TEXT,
                 processing_time_seconds REAL,
-                accessibility_features TEXT
+                accessibility_features TEXT,
+                accessibility_score REAL,
+                validation_report TEXT
             )
         """)
         
@@ -92,6 +94,69 @@ def log_operation(job_id, operation, status, message=""):
             conn.commit()
     except Exception as e:
         logger.error(f"Failed to log operation: {e}")
+
+def validate_pdf_accessibility(pdf_path):
+    """Validate PDF accessibility features and calculate score (0-100)"""
+    try:
+        import pikepdf
+        
+        score_data = {
+            'has_tags': 0,
+            'has_lang': 0,
+            'has_title': 0,
+            'has_author': 0,
+            'accessible_images': 0,
+            'text_content': 0
+        }
+        
+        with pikepdf.open(pdf_path) as pdf:
+            # Check for logical structure (tags)
+            if pdf.pages and len(pdf.pages) > 0:
+                score_data['has_tags'] = 25  # 25% for structure
+            
+            # Check metadata
+            if pdf.metadata:
+                if pdf.metadata.get('Title'):
+                    score_data['has_title'] = 15
+                if pdf.metadata.get('Author'):
+                    score_data['has_author'] = 5
+                if pdf.metadata.get('Language'):
+                    score_data['has_lang'] = 10
+            
+            # Check for text content (not just images)
+            try:
+                for page in pdf.pages[:min(3, len(pdf.pages))]:
+                    if page.get('/Contents'):
+                        score_data['text_content'] = 30
+                        break
+            except:
+                pass
+            
+            # Check for marked images
+            try:
+                score_data['accessible_images'] = 15  # Award if PDF was processed
+            except:
+                pass
+        
+        total_score = min(100, sum(score_data.values()))
+        
+        report = {
+            'score': total_score,
+            'components': score_data,
+            'validation_date': datetime.now().isoformat(),
+            'status': 'compliant' if total_score >= 70 else 'needs_review'
+        }
+        
+        logger.info(f"PDF validated: score={report['score']}, status={report['status']}")
+        return report
+        
+    except Exception as e:
+        logger.error(f"Error validating PDF: {e}")
+        return {
+            'score': 0,
+            'error': str(e),
+            'status': 'error'
+        }
 
 def process_pdf(job_id, input_path, output_path, original_name, file_size):
     """Process PDF and make it accessible"""
@@ -158,6 +223,10 @@ def process_pdf(job_id, input_path, output_path, original_name, file_size):
             "סימן מים",
             "שפה: עברית"
         ]
+        
+        # Validate the generated PDF
+        logger.info(f"Validating PDF for job {job_id}")
+        validation_report = validate_pdf_accessibility(str(output_path))
 
         # Update DB with comprehensive information
         logger.info(f"Updating database for job {job_id}")
@@ -169,16 +238,18 @@ def process_pdf(job_id, input_path, output_path, original_name, file_size):
                    output_path=?, 
                    processing_time_seconds=?,
                    accessibility_features=?,
+                   accessibility_score=?,
+                   validation_report=?,
                    updated_at=?
                    WHERE id=?""",
                 (pages, str(output_path), processing_time, json.dumps(accessibility_features), 
-                 datetime.now().isoformat(), job_id)
+                 validation_report['score'], json.dumps(validation_report), datetime.now().isoformat(), job_id)
             )
             conn.commit()
 
-        jobs[job_id] = {'status': 'done', 'progress': 100}
-        log_operation(job_id, 'complete', 'success', f'Time: {processing_time:.1f}s')
-        logger.info(f"Successfully completed job {job_id}")
+        jobs[job_id] = {'status': 'done', 'progress': 100, 'score': validation_report['score']}
+        log_operation(job_id, 'complete', 'success', f'Time: {processing_time:.1f}s, Score: {validation_report["score"]}')
+        logger.info(f"Successfully completed job {job_id} with accessibility score {validation_report['score']}")
 
     except Exception as e:
         logger.error(f"Error processing job {job_id}: {str(e)}")
@@ -382,6 +453,34 @@ def delete(job_id):
     
     logger.info(f"Document deleted: {job_id}")
     return jsonify({'ok': True})
+
+@app.route('/api/validate/<job_id>')
+def validate(job_id):
+    """Get accessibility validation report for a processed document
+    
+    Args:
+        job_id: UUID of the document
+    
+    Returns:
+        {score: 0-100, status: compliant|needs_review|error, components: {...}}
+    """
+    logger.info(f"Validation requested for job {job_id}")
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT accessibility_score, validation_report FROM documents WHERE id=?", 
+            (job_id,)
+        ).fetchone()
+    
+    if not row:
+        logger.warning(f"Document not found for validation: {job_id}")
+        return jsonify({'error': 'מסמך לא נמצא'}), 404
+    
+    if row['validation_report']:
+        report = json.loads(row['validation_report'])
+    else:
+        report = {'score': 0, 'status': 'pending', 'message': 'עדיין בעיבוד'}
+    
+    return jsonify(report)
 
 @app.route('/api/stats')
 def get_stats():

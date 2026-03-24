@@ -28,23 +28,28 @@
     --white:  #FFFFFF;
     --radius: 10px;
     --shadow: 0 1px 3px rgba(0,0,0,.08), 0 4px 12px rgba(0,0,0,.05);
+    --shadow-lg: 0 4px 6px rgba(0,0,0,.1), 0 10px 20px rgba(0,0,0,.08);
   }
 
   body {
-    font-family: 'Heebo', sans-serif;
-    background: var(--bg);
+    font-family: 'Heebo', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: linear-gradient(135deg, var(--bg) 0%, #F0F4FB 100%);
     color: var(--gray-1);
     min-height: 100vh;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
   }
 
   /* Header */
   header {
-    background: var(--blue);
+    background: linear-gradient(135deg, var(--blue) 0%, var(--blue-l) 100%);
     padding: 0 2rem;
     height: 56px;
     display: flex;
     align-items: center;
     gap: 14px;
+    box-shadow: var(--shadow);
   }
   .logo-mark {
     width: 32px; height: 32px;
@@ -311,6 +316,129 @@
   }
   .search-input:focus { border-color: var(--blue-l); }
 
+  /* ========== ANIMATIONS ========== */
+
+  @keyframes slideUp {
+    from {
+      opacity: 0;
+      transform: translateY(20px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  @keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+
+  @keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
+  }
+
+  @keyframes shimmer {
+    0% { background-position: -1000px 0; }
+    100% { background-position: 1000px 0; }
+  }
+
+  /* Loading spinner */
+  .spinner {
+    width: 24px;
+    height: 24px;
+    border: 3px solid var(--blue-l);
+    border-top-color: var(--blue);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+
+  /* Apply animations */
+  .result-box {
+    animation: slideUp 0.5s ease-out forwards;
+  }
+
+  .stat-card {
+    animation: fadeIn 0.6s ease-out;
+  }
+
+  .card {
+    animation: fadeIn 0.4s ease-out;
+  }
+
+  /* Button hover effects */
+  .btn, .btn-download, .btn-sm {
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  .btn:hover, .btn-download:hover, .btn-sm:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-lg);
+  }
+
+  .btn:active, .btn-download:active, .btn-sm:active {
+    transform: translateY(0);
+  }
+
+  /* Table row hover */
+  table tbody tr {
+    transition: background 0.2s ease;
+  }
+
+  table tbody tr:hover {
+    background: var(--bg);
+  }
+
+  /* Card hover effects */
+  .stat-card {
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  .stat-card:hover {
+    transform: translateY(-4px);
+    box-shadow: var(--shadow-lg);
+  }
+
+  /* Progress bar smooth animation */
+  .progress-bar {
+    transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  /* Badge animations */
+  .badge {
+    animation: slideUp 0.4s ease-out;
+  }
+
+  /* Desktop responsive improvements */
+  @media (min-width: 1200px) {
+    main {
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+    
+    .stats-bar {
+      gap: 1.5rem;
+    }
+    
+    .stat-card {
+      padding: 1.25rem;
+    }
+    
+    .card {
+      margin: 1.5rem 0;
+    }
+    
+    th, td {
+      padding: 0.9rem 1.25rem;
+    }
+  }
+
   @media (max-width: 600px) {
     .stats-bar { grid-template-columns: 1fr; }
     main { padding: 1rem; }
@@ -400,6 +528,15 @@
       <div class="result-text">
         <p id="result-title"></p>
         <small id="result-sub"></small>
+        <div id="accessibility-score-display" style="margin-top: 8px; display: none;">
+          <div style="font-size: 12px; color: var(--gray-2); margin-bottom: 4px;">📊 ציון נגישות:</div>
+          <div style="display: flex; gap: 8px; align-items: center;">
+            <div id="score-bar" style="flex: 1; height: 20px; background: var(--gray-4); border-radius: 99px; overflow: hidden;">
+              <div id="score-fill" style="height: 100%; background: linear-gradient(90deg, var(--green), #84CC16); width: 0%; border-radius: 99px; display: flex; align-items: center; justify-content: center; color: white; font-size: 11px; font-weight: 600;"></div>
+            </div>
+            <span id="score-text" style="font-weight: 600; color: var(--green); min-width: 40px;">0%</span>
+          </div>
+        </div>
       </div>
       <button class="btn-download" id="btn-download" style="display:none">⬇ הורדה</button>
     </div>
@@ -425,6 +562,7 @@
             <th>תאריך</th>
             <th>עמודים</th>
             <th>זמן עיבוד</th>
+            <th>ציון נגישות</th>
             <th>סטטוס</th>
             <th></th>
           </tr>
@@ -738,7 +876,7 @@ function pollStatus() {
   }, 1000);
 }
 
-function showSuccess() {
+async function showSuccess() {
   document.getElementById('processing-box').style.display = 'none';
   
   // Show features
@@ -750,6 +888,34 @@ function showSuccess() {
   document.getElementById('result-icon').textContent = '✅';
   document.getElementById('result-title').textContent = 'המסמך הונגש בהצלחה';
   document.getElementById('result-sub').textContent = 'הקובץ עומד בתקן PDF/UA וIS 5568';
+  
+  // Fetch and display accessibility score
+  try {
+    const res = await fetch(`/api/validate/${currentJobId}`);
+    const validation = await res.json();
+    if (validation.score !== undefined) {
+      const score = Math.round(validation.score);
+      const scoreDisplay = document.getElementById('accessibility-score-display');
+      scoreDisplay.style.display = 'block';
+      document.getElementById('score-text').textContent = `${score}%`;
+      const scoreFill = document.getElementById('score-fill');
+      scoreFill.style.width = score + '%';
+      // Update color based on score
+      if (score >= 80) {
+        scoreFill.style.background = 'linear-gradient(90deg, var(--green), #84CC16)';
+        document.getElementById('score-text').style.color = 'var(--green)';
+      } else if (score >= 70) {
+        scoreFill.style.background = 'linear-gradient(90deg, #FBBF24, #F59E0B)';
+        document.getElementById('score-text').style.color = '#F59E0B';
+      } else {
+        scoreFill.style.background = 'linear-gradient(90deg, #FB7185, #F43F5E)';
+        document.getElementById('score-text').style.color = '#F43F5E';
+      }
+    }
+  } catch(e) {
+    console.error('Failed to fetch validation score:', e);
+  }
+  
   const btn = document.getElementById('btn-download');
   btn.style.display = 'block';
   btn.onclick = () => window.location = `/api/download/${currentJobId}`;
@@ -760,6 +926,7 @@ function showSuccess() {
     box.style.display = 'none';
     document.getElementById('processing-box').style.display = 'none';
     document.getElementById('features-list').style.display = 'none';
+    document.getElementById('accessibility-score-display').style.display = 'none';
     setProgress(0, '', '');
     fileInput.value = '';
     currentJobId = null;
@@ -794,7 +961,7 @@ async function loadHistory() {
 function renderHistory(docs) {
   const tbody = document.getElementById('history-body');
   if (!docs.length) {
-    tbody.innerHTML = '<tr><td colspan="6"><div class="empty-history">אין מסמכים עדיין</div></td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7"><div class="empty-history">אין מסמכים עדיין</div></td></tr>';
     return;
   }
 
@@ -813,6 +980,16 @@ function renderHistory(docs) {
     const name = d.original_name.replace(/\.pdf$/i, '');
     const pages = d.pages ? `${d.pages} עמ'` : '—';
     const time = d.processing_time_seconds ? formatTime(d.processing_time_seconds) : '—';
+    
+    // Format accessibility score
+    let scoreHtml = '—';
+    if (d.accessibility_score !== null && d.accessibility_score !== undefined) {
+      const score = Math.round(d.accessibility_score);
+      let scoreColor = 'var(--green)';
+      if (score < 70) scoreColor = '#F43F5E';
+      else if (score < 80) scoreColor = '#F59E0B';
+      scoreHtml = `<span style="font-weight: 600; color: ${scoreColor};">${score}%</span>`;
+    }
 
     // Format date from ISO format
     let dateStr = '—';
@@ -826,6 +1003,7 @@ function renderHistory(docs) {
       <td>${dateStr}</td>
       <td>${pages}</td>
       <td>${time}</td>
+      <td>${scoreHtml}</td>
       <td>${badge}</td>
       <td><div class="actions">${actions}</div></td>
     </tr>`;
