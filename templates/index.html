@@ -365,6 +365,9 @@
       <div class="drop-icon">📂</div>
       <p><strong onclick="document.getElementById('file-input').click()">לחצי לבחירת קובץ</strong> או גרור לכאן</p>
       <small>PDF בלבד · עד 200MB</small>
+      <div id="file-size-warning" style="display:none; color: #E05C20; font-size: 12px; margin-top: 8px;">
+        ⚠️ קובץ גדול - עיבוד עשוי להימשך עד 30 דקות
+      </div>
       <input type="file" id="file-input" accept=".pdf">
     </div>
 
@@ -633,7 +636,19 @@ dropZone.addEventListener('drop', e => {
   const file = e.dataTransfer.files[0];
   if (file) uploadFile(file);
 });
-fileInput.addEventListener('change', () => { if (fileInput.files[0]) uploadFile(fileInput.files[0]); });
+fileInput.addEventListener('change', () => { 
+  if (fileInput.files[0]) {
+    const fileSizeMB = fileInput.files[0].size / (1024 * 1024);
+    const warning = document.getElementById('file-size-warning');
+    if (fileSizeMB > 50) {
+      warning.style.display = 'block';
+      warning.innerHTML = `⚠️ קובץ גדול (${fileSizeMB.toFixed(1)}MB) - עיבוד עשוי להימשך כמה דקות`;
+    } else {
+      warning.style.display = 'none';
+    }
+    uploadFile(fileInput.files[0]);
+  }
+});
 dropZone.addEventListener('click', e => { if (e.target.tagName !== 'STRONG') fileInput.click(); });
 
 // --- Upload ---

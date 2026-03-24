@@ -98,7 +98,7 @@ def process_pdf(job_id, input_path, output_path, original_name, file_size):
     start_time = datetime.now()
     
     try:
-        logger.info(f"Starting processing for job {job_id}: {original_name}")
+        logger.info(f"Starting processing for job {job_id}: {original_name} (size: {file_size} bytes)")
         jobs[job_id] = {'status': 'processing', 'progress': 10}
         log_operation(job_id, 'start', 'in_progress')
 
@@ -107,14 +107,20 @@ def process_pdf(job_id, input_path, output_path, original_name, file_size):
         result = subprocess.run(
             ['python3', '-c',
              f"import pikepdf; pdf=pikepdf.open('{input_path}'); print(len(pdf.pages))"],
-            capture_output=True, text=True, timeout=30
+            capture_output=True, text=True, timeout=60
         )
         pages = int(result.stdout.strip()) if result.returncode == 0 else 0
         jobs[job_id]['progress'] = 30
         log_operation(job_id, 'count_pages', 'success', f'Pages: {pages}')
+        logger.info(f"File has {pages} pages")
 
         # Extract title from filename
         title = Path(original_name).stem.replace('-', ' ').replace('_', ' ')
+
+        # Determine DPI based on file size (optimize for large files)
+        # Files over 50MB use lower DPI for faster processing
+        dpi = '150' if file_size > 50 * 1024 * 1024 else '200'
+        logger.info(f"Using DPI: {dpi} for job {job_id}")
 
         # Run accessibility script
         logger.info(f"Running accessibility script for job {job_id}")
@@ -124,12 +130,16 @@ def process_pdf(job_id, input_path, output_path, original_name, file_size):
             '--output', str(output_path),
             '--lang', 'he-IL',
             '--title', title,
-            '--dpi', '200',
+            '--dpi', dpi,
             '--stamp'
         ]
         jobs[job_id]['progress'] = 50
 
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        # Adjust timeout based on file size: 5 min minimum + 1 sec per MB
+        timeout_seconds = max(300, 300 + (file_size // (1024 * 1024)))
+        logger.info(f"Processing timeout set to {timeout_seconds} seconds")
+        
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_seconds)
         jobs[job_id]['progress'] = 90
 
         if proc.returncode != 0:
@@ -212,13 +222,26 @@ def upload():
         logger.warning(f"Upload attempt with non-PDF: {file.filename}")
         return jsonify({'error': msg}), 400
 
+    # Get file size
+    file.seek(0, 2)  # Seek to end
+    file_size = file.tell()
+    file.seek(0)  # Seek back to start
+    
+    # Validate file size (max 200MB)
+    max_size = 200 * 1024 * 1024
+    if file_size > max_size:
+        msg = f'קובץ גדול מדי. גודל מרבי: 200MB, הקובץ שלך: {file_size / (1024*1024):.1f}MB'
+        logger.warning(f"Upload attempt with oversized file: {file.filename} ({file_size} bytes)")
+        return jsonify({'error': msg}), 400
+    
+    # Warn if file is large (will take longer)
+    if file_size > 50 * 1024 * 1024:
+        logger.info(f"Large file upload: {file.filename} ({file_size/(1024*1024):.1f}MB) - will use optimized settings")
+
     job_id = str(uuid.uuid4())
     input_path = UPLOAD_DIR / f"{job_id}_input.pdf"
     output_path = OUTPUT_DIR / f"{job_id}_accessible.pdf"
-    
-    # Get file size
-    file_size = len(file.read())
-    file.seek(0)
+
     file.save(input_path)
 
     logger.info(f"File uploaded: job_id={job_id}, filename={file.filename}, size={file_size} bytes")
