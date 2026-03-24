@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>הנגשת מסמכים — עיריית אילת</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --blue:   #1A4E8A;
+    --blue-l: #2563B0;
+    --blue-s: #E8F0FB;
+    --orange: #E05C20;
+    --ora-s:  #FEF0E8;
+    --green:  #1C7C4A;
+    --grn-s:  #E6F4EC;
+    --red:    #B91C1C;
+    --red-s:  #FEF2F2;
+    --gray-1: #1E2432;
+    --gray-2: #4A5568;
+    --gray-3: #718096;
+    --gray-4: #CBD5E0;
+    --gray-5: #EDF2F7;
+    --bg:     #F7F9FC;
+    --white:  #FFFFFF;
+    --radius: 10px;
+    --shadow: 0 1px 3px rgba(0,0,0,.08), 0 4px 12px rgba(0,0,0,.05);
+  }
+
+  body {
+    font-family: 'Heebo', sans-serif;
+    background: var(--bg);
+    color: var(--gray-1);
+    min-height: 100vh;
+  }
+
+  /* Header */
+  header {
+    background: var(--blue);
+    padding: 0 2rem;
+    height: 56px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+  .logo-mark {
+    width: 32px; height: 32px;
+    background: var(--orange);
+    border-radius: 6px;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 600; color: white; font-size: 14px;
+    flex-shrink: 0;
+  }
+  header h1 { color: white; font-size: 15px; font-weight: 500; }
+  header span { color: rgba(255,255,255,.5); font-size: 13px; margin-right: auto; }
+
+  /* Layout */
+  main {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 2rem 1.5rem;
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 1.5rem;
+  }
+
+  /* Upload card */
+  .card {
+    background: var(--white);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+  .card-header {
+    padding: .9rem 1.25rem;
+    border-bottom: 1px solid var(--gray-5);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .card-header h2 { font-size: 14px; font-weight: 600; color: var(--gray-1); }
+  .card-icon {
+    width: 28px; height: 28px; border-radius: 6px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px;
+  }
+  .icon-blue { background: var(--blue-s); }
+  .icon-gray { background: var(--gray-5); }
+
+  /* Drop zone */
+  .drop-zone {
+    margin: 1.25rem;
+    border: 2px dashed var(--gray-4);
+    border-radius: 8px;
+    padding: 2.5rem 1rem;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color .2s, background .2s;
+  }
+  .drop-zone:hover, .drop-zone.drag-over {
+    border-color: var(--blue-l);
+    background: var(--blue-s);
+  }
+  .drop-icon { font-size: 36px; margin-bottom: .75rem; }
+  .drop-zone p { color: var(--gray-2); font-size: 14px; line-height: 1.7; }
+  .drop-zone strong { color: var(--blue-l); cursor: pointer; }
+  .drop-zone small { color: var(--gray-3); font-size: 12px; }
+  #file-input { display: none; }
+
+  /* Processing state */
+  .processing-box {
+    margin: 1.25rem;
+    display: none;
+  }
+  .file-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: .85rem 1rem;
+    background: var(--gray-5);
+    border-radius: 8px;
+    margin-bottom: .85rem;
+  }
+  .file-icon { font-size: 20px; }
+  .file-name { font-size: 13px; font-weight: 500; flex: 1; }
+  .file-status { font-size: 12px; color: var(--gray-3); }
+
+  .progress-wrap {
+    height: 6px;
+    background: var(--gray-4);
+    border-radius: 99px;
+    overflow: hidden;
+  }
+  .progress-bar {
+    height: 100%;
+    background: linear-gradient(90deg, var(--blue), var(--blue-l));
+    border-radius: 99px;
+    width: 0%;
+    transition: width .4s ease;
+  }
+  .progress-label {
+    font-size: 11px;
+    color: var(--gray-3);
+    margin-top: 6px;
+    text-align: left;
+  }
+
+  /* Result box */
+  .result-box {
+    margin: 1.25rem;
+    padding: 1rem;
+    border-radius: 8px;
+    display: none;
+    align-items: center;
+    gap: 12px;
+  }
+  .result-box.success { background: var(--grn-s); border: 1px solid #86EFAC; }
+  .result-box.error   { background: var(--red-s);  border: 1px solid #FCA5A5; }
+  .result-icon { font-size: 22px; flex-shrink: 0; }
+  .result-text { flex: 1; }
+  .result-text p { font-size: 13px; font-weight: 500; }
+  .result-text small { font-size: 12px; color: var(--gray-2); }
+  .btn-download {
+    padding: .5rem 1rem;
+    background: var(--green);
+    color: white;
+    border: none;
+    border-radius: 6px;
+    font-family: 'Heebo', sans-serif;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background .15s;
+  }
+  .btn-download:hover { background: #15693e; }
+
+  /* History table */
+  .history-wrap { overflow-x: auto; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  th {
+    text-align: right;
+    padding: .65rem 1rem;
+    background: var(--gray-5);
+    color: var(--gray-2);
+    font-weight: 500;
+    font-size: 12px;
+    border-bottom: 1px solid var(--gray-4);
+  }
+  td {
+    padding: .75rem 1rem;
+    border-bottom: 1px solid var(--gray-5);
+    color: var(--gray-1);
+    vertical-align: middle;
+  }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: var(--bg); }
+
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    border-radius: 99px;
+    font-size: 11px;
+    font-weight: 500;
+  }
+  .badge-done    { background: var(--grn-s); color: var(--green); }
+  .badge-proc    { background: var(--blue-s); color: var(--blue-l); }
+  .badge-error   { background: var(--red-s); color: var(--red); }
+
+  .btn-sm {
+    padding: 4px 10px;
+    border-radius: 5px;
+    font-family: 'Heebo', sans-serif;
+    font-size: 12px;
+    cursor: pointer;
+    border: 1px solid var(--gray-4);
+    background: white;
+    color: var(--gray-2);
+    transition: all .15s;
+  }
+  .btn-sm:hover { background: var(--gray-5); }
+  .btn-sm.danger { color: var(--red); border-color: #FCA5A5; }
+  .btn-sm.danger:hover { background: var(--red-s); }
+  .btn-sm.primary { color: var(--blue-l); border-color: #93C5FD; }
+  .btn-sm.primary:hover { background: var(--blue-s); }
+
+  .actions { display: flex; gap: 6px; justify-content: flex-end; }
+
+  .empty-history {
+    text-align: center;
+    padding: 2.5rem;
+    color: var(--gray-3);
+    font-size: 13px;
+  }
+
+  /* Search */
+  .table-toolbar {
+    padding: .85rem 1.25rem;
+    border-bottom: 1px solid var(--gray-5);
+    display: flex;
+    align-items: center;
+    gap: .75rem;
+  }
+  .search-input {
+    flex: 1;
+    padding: .45rem .75rem;
+    border: 1px solid var(--gray-4);
+    border-radius: 6px;
+    font-family: 'Heebo', sans-serif;
+    font-size: 13px;
+    outline: none;
+    direction: rtl;
+  }
+  .search-input:focus { border-color: var(--blue-l); }
+
+  /* Stats bar */
+  .stats-bar {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1rem;
+  }
+  .stat-card {
+    background: var(--white);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 1rem 1.25rem;
+  }
+  .stat-label { font-size: 11px; color: var(--gray-3); font-weight: 500; text-transform: uppercase; letter-spacing: .04em; margin-bottom: .35rem; }
+  .stat-value { font-size: 24px; font-weight: 600; color: var(--gray-1); }
+  .stat-sub { font-size: 11px; color: var(--gray-3); margin-top: 2px; }
+
+  @media (max-width: 600px) {
+    .stats-bar { grid-template-columns: 1fr 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo-mark">נג</div>
+  <h1>מערכת הנגשת מסמכים</h1>
+  <span>עיריית אילת — מחלקה דיגיטלית</span>
+</header>
+
+<main>
+  <!-- Stats -->
+  <div class="stats-bar" id="stats-bar">
+    <div class="stat-card">
+      <div class="stat-label">סה"כ מסמכים</div>
+      <div class="stat-value" id="stat-total">—</div>
+      <div class="stat-sub">מאז ההתחלה</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">עמודים הונגשו</div>
+      <div class="stat-value" id="stat-pages">—</div>
+      <div class="stat-sub">עמודי PDF</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">היום</div>
+      <div class="stat-value" id="stat-today">—</div>
+      <div class="stat-sub">מסמכים</div>
+    </div>
+  </div>
+
+  <!-- Upload -->
+  <div class="card">
+    <div class="card-header">
+      <div class="card-icon icon-blue">📄</div>
+      <h2>העלאת מסמך להנגשה</h2>
+    </div>
+
+    <div class="drop-zone" id="drop-zone">
+      <div class="drop-icon">📂</div>
+      <p><strong onclick="document.getElementById('file-input').click()">לחצי לבחירת קובץ</strong> או גרור לכאן</p>
+      <small>PDF בלבד · עד 50MB</small>
+      <input type="file" id="file-input" accept=".pdf">
+    </div>
+
+    <div class="processing-box" id="processing-box">
+      <div class="file-row">
+        <span class="file-icon">📄</span>
+        <span class="file-name" id="proc-filename">—</span>
+        <span class="file-status" id="proc-status">מעבד...</span>
+      </div>
+      <div class="progress-wrap">
+        <div class="progress-bar" id="progress-bar"></div>
+      </div>
+      <div class="progress-label" id="progress-label">מתחיל עיבוד...</div>
+    </div>
+
+    <div class="result-box" id="result-box">
+      <span class="result-icon" id="result-icon"></span>
+      <div class="result-text">
+        <p id="result-title"></p>
+        <small id="result-sub"></small>
+      </div>
+      <button class="btn-download" id="btn-download" style="display:none">⬇ הורדה</button>
+    </div>
+  </div>
+
+  <!-- History -->
+  <div class="card">
+    <div class="card-header">
+      <div class="card-icon icon-gray">🕓</div>
+      <h2>היסטוריית מסמכים</h2>
+    </div>
+
+    <div class="table-toolbar">
+      <input class="search-input" id="search-input" type="text" placeholder="חיפוש לפי שם מסמך..." oninput="filterHistory()">
+      <button class="btn-sm" onclick="loadHistory()">רענן</button>
+    </div>
+
+    <div class="history-wrap">
+      <table id="history-table">
+        <thead>
+          <tr>
+            <th>שם המסמך</th>
+            <th>תאריך</th>
+            <th>עמודים</th>
+            <th>סטטוס</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="history-body">
+          <tr><td colspan="5"><div class="empty-history">טוען...</div></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</main>
+
+<script>
+let currentJobId = null;
+let pollInterval = null;
+let allHistory = [];
+
+// --- Drop zone ---
+const dropZone = document.getElementById('drop-zone');
+const fileInput = document.getElementById('file-input');
+
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropZone.classList.remove('drag-over');
+  const file = e.dataTransfer.files[0];
+  if (file) uploadFile(file);
+});
+fileInput.addEventListener('change', () => { if (fileInput.files[0]) uploadFile(fileInput.files[0]); });
+dropZone.addEventListener('click', e => { if (e.target.tagName !== 'STRONG') fileInput.click(); });
+
+// --- Upload ---
+async function uploadFile(file) {
+  if (!file.name.toLowerCase().endsWith('.pdf')) {
+    alert('יש להעלות קובץ PDF בלבד'); return;
+  }
+
+  // Show processing UI
+  dropZone.style.display = 'none';
+  const procBox = document.getElementById('processing-box');
+  procBox.style.display = 'block';
+  document.getElementById('proc-filename').textContent = file.name;
+  document.getElementById('proc-status').textContent = 'מעלה...';
+  document.getElementById('result-box').style.display = 'none';
+  setProgress(5, 'מעלה קובץ...');
+
+  const fd = new FormData();
+  fd.append('file', file);
+
+  try {
+    const res = await fetch('/api/upload', { method: 'POST', body: fd });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+
+    currentJobId = data.job_id;
+    pollStatus();
+  } catch (e) {
+    showError(e.message);
+  }
+}
+
+function setProgress(pct, label) {
+  document.getElementById('progress-bar').style.width = pct + '%';
+  document.getElementById('progress-label').textContent = label;
+}
+
+const LABELS = {
+  5:  'מתחיל עיבוד...',
+  10: 'טוען קובץ...',
+  30: 'בודק עמודים...',
+  50: 'מנגיש תוכן...',
+  90: 'מוסיף תיוג PDF/UA...',
+  100:'הושלם!'
+};
+
+function pollStatus() {
+  if (pollInterval) clearInterval(pollInterval);
+  document.getElementById('proc-status').textContent = 'מעבד...';
+
+  pollInterval = setInterval(async () => {
+    try {
+      const res = await fetch(`/api/status/${currentJobId}`);
+      const data = await res.json();
+
+      const pct = data.progress || 5;
+      const label = LABELS[pct] || `${pct}%`;
+      setProgress(pct, label);
+
+      if (data.status === 'done') {
+        clearInterval(pollInterval);
+        showSuccess();
+        loadHistory();
+      } else if (data.status === 'error') {
+        clearInterval(pollInterval);
+        showError(data.error || 'שגיאה בעיבוד');
+      }
+    } catch(e) {}
+  }, 1000);
+}
+
+function showSuccess() {
+  document.getElementById('processing-box').style.display = 'none';
+  const box = document.getElementById('result-box');
+  box.className = 'result-box success';
+  box.style.display = 'flex';
+  document.getElementById('result-icon').textContent = '✅';
+  document.getElementById('result-title').textContent = 'המסמך הונגש בהצלחה';
+  document.getElementById('result-sub').textContent = 'הקובץ עומד בתקן PDF/UA ו-IS 5568';
+  const btn = document.getElementById('btn-download');
+  btn.style.display = 'block';
+  btn.onclick = () => window.location = `/api/download/${currentJobId}`;
+
+  // Reset for next upload
+  setTimeout(() => {
+    dropZone.style.display = 'block';
+    box.style.display = 'none';
+    document.getElementById('processing-box').style.display = 'none';
+    setProgress(0, '');
+    fileInput.value = '';
+    currentJobId = null;
+  }, 6000);
+}
+
+function showError(msg) {
+  document.getElementById('processing-box').style.display = 'none';
+  dropZone.style.display = 'block';
+  const box = document.getElementById('result-box');
+  box.className = 'result-box error';
+  box.style.display = 'flex';
+  document.getElementById('result-icon').textContent = '⚠️';
+  document.getElementById('result-title').textContent = 'שגיאה בעיבוד';
+  document.getElementById('result-sub').textContent = msg;
+  document.getElementById('btn-download').style.display = 'none';
+}
+
+// --- History ---
+async function loadHistory() {
+  try {
+    const res = await fetch('/api/history');
+    allHistory = await res.json();
+    renderHistory(allHistory);
+    updateStats(allHistory);
+  } catch(e) {}
+}
+
+function renderHistory(docs) {
+  const tbody = document.getElementById('history-body');
+  if (!docs.length) {
+    tbody.innerHTML = '<tr><td colspan="5"><div class="empty-history">אין מסמכים עדיין</div></td></tr>';
+    return;
+  }
+
+  const today = new Date().toLocaleDateString('he-IL');
+
+  tbody.innerHTML = docs.map(d => {
+    const badge = d.status === 'done'
+      ? `<span class="badge badge-done">✓ הושלם</span>`
+      : d.status === 'error'
+      ? `<span class="badge badge-error">שגיאה</span>`
+      : `<span class="badge badge-proc">מעבד...</span>`;
+
+    const actions = d.status === 'done'
+      ? `<button class="btn-sm primary" onclick="window.location='/api/download/${d.id}'">הורדה</button>
+         <button class="btn-sm danger" onclick="deleteDoc('${d.id}')">מחיקה</button>`
+      : `<button class="btn-sm danger" onclick="deleteDoc('${d.id}')">מחיקה</button>`;
+
+    const name = d.original_name.replace(/\.pdf$/i, '');
+    const pages = d.pages ? `${d.pages} עמ'` : '—';
+
+    return `<tr>
+      <td title="${d.original_name}">${name.length > 40 ? name.slice(0,40)+'…' : name}</td>
+      <td>${d.created_at || '—'}</td>
+      <td>${pages}</td>
+      <td>${badge}</td>
+      <td><div class="actions">${actions}</div></td>
+    </tr>`;
+  }).join('');
+}
+
+function filterHistory() {
+  const q = document.getElementById('search-input').value.trim().toLowerCase();
+  if (!q) { renderHistory(allHistory); return; }
+  renderHistory(allHistory.filter(d => d.original_name.toLowerCase().includes(q)));
+}
+
+async function deleteDoc(id) {
+  if (!confirm('למחוק את המסמך?')) return;
+  await fetch(`/api/delete/${id}`, { method: 'DELETE' });
+  loadHistory();
+}
+
+function updateStats(docs) {
+  const done = docs.filter(d => d.status === 'done');
+  const pages = done.reduce((s, d) => s + (d.pages || 0), 0);
+  const today = new Date().toLocaleDateString('he-IL');
+  const todayCount = done.filter(d => d.created_at && d.created_at.startsWith(today.split('/').reverse().join('/'))).length;
+
+  document.getElementById('stat-total').textContent = docs.length;
+  document.getElementById('stat-pages').textContent = pages.toLocaleString('he-IL');
+  document.getElementById('stat-today').textContent = todayCount;
+}
+
+// Init
+loadHistory();
+setInterval(loadHistory, 15000);
+</script>
+</body>
+</html>
