@@ -276,6 +276,9 @@ def build_accessible_pdf(
         pdf.close()
         os.unlink(rl_stage)
 
+        # תיקון PAC — הוספת BDC/EMC markers לכל עמוד
+        _patch_bdc_emc(str(output_path), num_pages)
+
     print(f"  \u2713 הושלם: {output_path}", flush=True)
     return num_pages
 
@@ -293,6 +296,63 @@ def _add_bookmarks(pdf, page_titles, num_pages):
         pdf.Root['/PageMode'] = Name('/UseOutlines')
     except Exception:
         pass
+
+
+def _patch_bdc_emc(output_path: str, num_pages: int):
+    """
+    מוסיף BDC/EMC markers לכל עמוד — נדרש ל-PAC ו-Matterhorn Protocol.
+    עוטף את כל תוכן העמוד ב:
+      /Sect <</MCID X>> BDC
+      ... תוכן מקורי ...
+      EMC
+    """
+    import re
+    pdf = pikepdf.open(output_path, allow_overwriting_input=True)
+
+    mcid = 0
+    for pi, page in enumerate(pdf.pages):
+        # קורא את ה-content stream
+        if '/Contents' not in page:
+            mcid += 2
+            continue
+
+        contents = page['/Contents']
+        if isinstance(contents, pikepdf.Array):
+            streams = list(contents)
+        else:
+            streams = [contents]
+
+        new_streams = []
+        for stream in streams:
+            try:
+                raw = stream.read_raw_bytes()
+                data = stream.read_bytes()
+            except Exception:
+                new_streams.append(stream)
+                mcid += 2
+                continue
+
+            # BDC header ו-EMC footer
+            bdc_h1 = f'/H1 <</MCID {mcid}>> BDC\n'.encode()
+            emc_h1 = b'\nEMC\n'
+            bdc_p  = f'/P <</MCID {mcid+1}>> BDC\n'.encode()
+            emc_p  = b'\nEMC\n'
+
+            # עוטפים: H1 BDC בהתחלה, P BDC את שאר התוכן, EMC בסוף
+            new_data = bdc_h1 + emc_h1 + bdc_p + data + emc_p
+
+            new_stream = pikepdf.Stream(pdf, new_data)
+            new_streams.append(new_stream)
+            mcid += 2
+
+        if len(new_streams) == 1:
+            page['/Contents'] = new_streams[0]
+        else:
+            page['/Contents'] = pikepdf.Array(new_streams)
+
+    pdf.save(output_path)
+    pdf.close()
+    print("  → BDC/EMC markers הוספו", flush=True)
 
 
 def main():
