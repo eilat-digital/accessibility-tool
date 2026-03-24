@@ -301,19 +301,12 @@ def _add_bookmarks(pdf, page_titles, num_pages):
 def _patch_bdc_emc(output_path: str, num_pages: int):
     """
     מוסיף BDC/EMC markers לכל עמוד — נדרש ל-PAC ו-Matterhorn Protocol.
-    עוטף את כל תוכן העמוד ב:
-      /Sect <</MCID X>> BDC
-      ... תוכן מקורי ...
-      EMC
+    כל עמוד מקבל BDC אחד (Artifact לתמונה + P לטקסט).
     """
-    import re
     pdf = pikepdf.open(output_path, allow_overwriting_input=True)
 
-    mcid = 0
     for pi, page in enumerate(pdf.pages):
-        # קורא את ה-content stream
         if '/Contents' not in page:
-            mcid += 2
             continue
 
         contents = page['/Contents']
@@ -322,37 +315,56 @@ def _patch_bdc_emc(output_path: str, num_pages: int):
         else:
             streams = [contents]
 
-        new_streams = []
+        patched = []
         for stream in streams:
             try:
-                raw = stream.read_raw_bytes()
                 data = stream.read_bytes()
             except Exception:
-                new_streams.append(stream)
-                mcid += 2
+                patched.append(stream)
                 continue
 
-            # BDC header ו-EMC footer
-            bdc_h1 = f'/H1 <</MCID {mcid}>> BDC\n'.encode()
-            emc_h1 = b'\nEMC\n'
-            bdc_p  = f'/P <</MCID {mcid+1}>> BDC\n'.encode()
-            emc_p  = b'\nEMC\n'
+            # תמונת הרקע → Artifact
+            # טקסט + תוכן → P עם MCID
+            mcid_p = pi * 2 + 1
 
-            # עוטפים: H1 BDC בהתחלה, P BDC את שאר התוכן, EMC בסוף
-            new_data = bdc_h1 + emc_h1 + bdc_p + data + emc_p
+            new_data = (
+                b'/Artifact <</Type /Background>> BDC\n' +
+                b'EMC\n' +
+                f'/P <</MCID {mcid_p}>> BDC\n'.encode() +
+                data +
+                b'\nEMC\n'
+            )
 
             new_stream = pikepdf.Stream(pdf, new_data)
-            new_streams.append(new_stream)
-            mcid += 2
+            patched.append(new_stream)
 
-        if len(new_streams) == 1:
-            page['/Contents'] = new_streams[0]
+        if len(patched) == 1:
+            page['/Contents'] = patched[0]
         else:
-            page['/Contents'] = pikepdf.Array(new_streams)
+            page['/Contents'] = pikepdf.Array(patched)
+
+    # תיקון ParentTree — כל MCID מצביע על ref נכון
+    st = pdf.Root['/StructTreeRoot']
+    doc_elem = st['/K']
+    sects = doc_elem['/K']
+
+    nums_array = pikepdf.Array()
+    for pi in range(num_pages):
+        mcid_p = pi * 2 + 1
+        sect = sects[pi]
+        kids = sect['/K']
+        p_ref = kids[1]  # P element
+        # MCID → ref לאלמנט P
+        nums_array.append(pikepdf.objects.Integer(mcid_p))
+        nums_array.append(p_ref)
+
+    st['/ParentTree'] = pdf.make_indirect(
+        Dictionary(Nums=nums_array)
+    )
 
     pdf.save(output_path)
     pdf.close()
-    print("  → BDC/EMC markers הוספו", flush=True)
+    print("  → BDC/EMC + ParentTree תוקנו", flush=True)
 
 
 def main():
