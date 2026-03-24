@@ -1,399 +1,470 @@
 #!/usr/bin/env python3
 """
-build_accessible_pdf.py — PDF Accessibility Tool
-עיריית אילת — PDF/UA + IS 5568 + WCAG 2.1 AA
-
-תומך בשני סוגי קלט אוטומטית:
-  1. PDF ממחשב (Word / מערכת) — מחלץ טקסט קיים
-  2. PDF סרוק (צילום נייר)   — מריץ OCR עברי אוטומטי
+build_accessible_pdf.py — v3
 """
-import argparse, json, os, sys, tempfile
-from pathlib import Path
 
-try:
-    from pdf2image import convert_from_path
-    from PIL import Image
-    from reportlab.pdfgen import canvas
-    from reportlab.lib.utils import ImageReader
-    import pikepdf
-    from pikepdf import Dictionary, Array, Name, String, Boolean
-except ImportError as e:
-    print(f"ERROR: חסרה חבילה — {e}", file=sys.stderr)
-    sys.exit(1)
-
-try:
-    import pytesseract
-    OCR_AVAILABLE = True
-except ImportError:
-    OCR_AVAILABLE = False
+import argparse
+import json
+import os
+import sys
+import tempfile
 
 
-# ── זיהוי סוג PDF ──────────────────────────────────────────────────────────────
-def detect_pdf_type(input_path: Path):
-    """מחזיר ('digital', {page:text}) או ('scanned', {})"""
-    try:
-        pdf = pikepdf.open(str(input_path))
-        pages_text = {}
-        total_chars = 0
-        for i, page in enumerate(pdf.pages):
+def ensure_deps():
+    missing = []
+    for pkg, imp in [("reportlab", "reportlab"), ("pikepdf", "pikepdf"),
+                     ("pdf2image", "pdf2image"), ("Pillow", "PIL")]:
+        try:
+            __import__(imp)
+        except ImportError:
+            missing.append(pkg)
+    if missing:
+        print(f"חסרות תלויות: {', '.join(missing)}")
+        sys.exit(1)
+
+
+FONT_CANDIDATES = [
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+    "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+    "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+    "/usr/share/fonts/truetype/noto/NotoSansHebrew-Regular.ttf",
+    "/usr/share/fonts/truetype/ubuntu/Ubuntu-R.ttf",
+]
+
+
+def find_embedded_font():
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    for fp in FONT_CANDIDATES:
+        if os.path.exists(fp):
             try:
-                from pdfminer.high_level import extract_text
-                txt = extract_text(str(input_path), page_numbers=[i]) or ''
-                if len(txt.strip()) > 20:
-                    pages_text[str(i+1)] = txt.strip()
-                    total_chars += len(txt.strip())
+                pdfmetrics.registerFont(TTFont("AccessFont", fp))
+                print(f"   פונט: {os.path.basename(fp)}")
+                return "AccessFont"
+            except Exception:
+                continue
+    return None
+
+
+def extract_pages(input_pdf, pages_dir, dpi=200):
+    from pdf2image import convert_from_path
+    print(f"מחלץ עמודים ({dpi} DPI)...")
+    images = convert_from_path(input_pdf, dpi=dpi)
+    paths = []
+    for i, img in enumerate(images, 1):
+        p = os.path.join(pages_dir, f"page_{i:02d}.png")
+        img.save(p, "PNG")
+        paths.append(p)
+    print(f"{len(paths)} עמודים")
+    return paths
+
+
+def run_ocr(page_paths, lang_code="he-IL"):
+    try:
+        import pytesseract
+        from PIL import Image
+    except ImportError:
+        return {}
+    lang_map = {"he-IL": "heb", "he": "heb", "ar": "ara", "en-US": "eng", "en": "eng"}
+    tess = lang_map.get(lang_code, lang_code.split("-")[0])
+    texts = {}
+    for i, path in enumerate(page_paths, 1):
+        try:
+            img = Image.open(path)
+            texts[i] = pytesseract.image_to_string(img, lang=tess, config="--psm 6").strip()
+        except Exception as e:
+            texts[i] = ""
+    return texts
+
+
+def detect_pdf_type(input_path):
+    try:
+        import pikepdf
+        from pdfminer.high_level import extract_text
+        total = 0
+        pages_text = {}
+        pdf = pikepdf.open(input_path)
+        for i in range(len(pdf.pages)):
+            try:
+                txt = extract_text(input_path, page_numbers=[i]) or ''
+                if len(txt.strip()) > 10:
+                    pages_text[i+1] = txt.strip()
+                    total += len(txt.strip())
             except Exception:
                 pass
         pdf.close()
-        if total_chars > 50:
-            print(f"  → זוהה: PDF ממחשב ({total_chars} תווים)", flush=True)
+        if total > 50:
+            print(f"  זוהה: PDF ממחשב ({total} תווים)")
             return 'digital', pages_text
-        print(f"  → זוהה: PDF סרוק", flush=True)
+        print("  זוהה: PDF סרוק")
         return 'scanned', {}
     except Exception:
         return 'scanned', {}
 
 
-# ── OCR ────────────────────────────────────────────────────────────────────────
-def run_ocr(image_paths: list, lang_code: str = 'he-IL') -> dict:
-    if not OCR_AVAILABLE:
-        print("  ⚠ pytesseract לא מותקן", flush=True)
-        return {}
-    tess_lang = {'he-IL':'heb','he':'heb','en-US':'eng','en':'eng'}.get(lang_code, 'heb')
-    try:
-        available = pytesseract.get_languages()
-        if tess_lang not in available:
-            print(f"  ⚠ שפת OCR '{tess_lang}' לא מותקנת — עובר ל-eng", flush=True)
-            tess_lang = 'eng'
-    except Exception:
-        pass
+def build_image_pdf(page_paths, page_texts, output_path, stamp=False):
+    from reportlab.pdfgen import canvas
+    from reportlab.lib.colors import Color
+    from PIL import Image as PILImage
 
-    results = {}
-    for i, (img_path, _) in enumerate(image_paths):
-        try:
-            img  = Image.open(img_path).convert('L')
-            text = pytesseract.image_to_string(img, lang=tess_lang, config='--psm 3')
-            results[str(i+1)] = text.strip() if text.strip() else f'עמוד {i+1}'
-            print(f"  → OCR עמוד {i+1}: {len(results[str(i+1)])} תווים", flush=True)
-        except Exception as e:
-            results[str(i+1)] = f'עמוד {i+1}'
-    return results
+    print(f"בונה PDF ({len(page_paths)} עמודים)...")
+    font_name = find_embedded_font() or "Helvetica"
+    stamp_color = Color(0.878, 0.361, 0.125, alpha=0.72)
 
+    c = canvas.Canvas(output_path)
+    for i, img_path in enumerate(page_paths, 1):
+        img = PILImage.open(img_path)
+        iw, ih = img.size
+        dpi_x = img.info.get("dpi", (200, 200))[0] or 200
+        pw = iw * 72.0 / dpi_x
+        ph = ih * 72.0 / dpi_x
+        c.setPageSize((pw, ph))
+        c.drawImage(img_path, 0, 0, width=pw, height=ph)
 
-# ── חותמת עגולה שקופה ────────────────────────────────────────────────────────────
-def _draw_stamp(c, pt_w, pt_h):
-    """
-    חותמת עגולה כתומה שקופה — פינה ימנית עליונה, כל העמודים.
-    עיגול קטן + ✓ + "נגיש"
-    """
-    from reportlab.lib.units import mm
-
-    ORANGE = (0.878, 0.361, 0.125)  # #E05C20
-    ALPHA  = 0.72
-    R      = 7 * mm        # קטן — 7mm רדיוס
-    MARGIN = 4 * mm
-    cx     = pt_w - MARGIN - R
-    cy     = pt_h - MARGIN - R
-
-    c.saveState()
-
-    # עיגול
-    c.setStrokeColorRGB(*ORANGE, alpha=ALPHA)
-    c.setFillColorRGB(*ORANGE, alpha=0)
-    c.setLineWidth(1.2)
-    c.circle(cx, cy, R, stroke=1, fill=0)
-
-    # ✓
-    c.setLineCap(1)
-    c.setLineJoin(1)
-    c.setLineWidth(1.6)
-    p = c.beginPath()
-    p.moveTo(cx - R*0.40, cy + R*0.08)
-    p.lineTo(cx - R*0.08, cy - R*0.35)
-    p.lineTo(cx + R*0.44, cy + R*0.40)
-    c.drawPath(p, stroke=1, fill=0)
-
-    # "נגיש" — ברור יותר
-    c.setFillColorRGB(*ORANGE, alpha=ALPHA)
-    c.setFont('Helvetica-Bold', 5)
-    c.drawCentredString(cx, cy - R*0.80, '\u05e0\u05d2\u05d9\u05e9')
-
-    c.restoreState()
-
-
-# ── בניית PDF נגיש ─────────────────────────────────────────────────────────────
-def build_accessible_pdf(
-    input_path, output_path,
-    lang='he-IL', title='', dpi=200, stamp=True, force_ocr=False,
-    text_data=None, page_titles=None, tables_data=None,
-):
-    input_path  = Path(input_path)
-    output_path = Path(output_path)
-    if not title:
-        title = input_path.stem.replace('-',' ').replace('_',' ')
-
-    # זיהוי אוטומטי
-    pdf_type, existing_text = detect_pdf_type(input_path)
-
-    # המרה לתמונות
-    print(f"  → ממיר עמודים ({dpi} DPI)...", flush=True)
-    with tempfile.TemporaryDirectory() as tmpdir:
-        images_pil = convert_from_path(str(input_path), dpi=dpi,
-                                       output_folder=tmpdir, fmt='png')
-        image_paths = []
-        for i, img in enumerate(images_pil):
-            p = Path(tmpdir) / f"page_{i+1:04d}.png"
-            img.save(str(p), 'PNG')
-            image_paths.append((str(p), img.size))
-        num_pages = len(image_paths)
-        print(f"  → {num_pages} עמודים", flush=True)
-
-        # בחירת טקסט
-        if text_data:
-            page_texts = text_data
-            print("  → טקסט ידני", flush=True)
-        elif pdf_type == 'digital' and not force_ocr:
-            page_texts = existing_text
-            print("  → טקסט מחולץ מה-PDF", flush=True)
-        else:
-            print(f"  → מריץ OCR ({lang})...", flush=True)
-            page_texts = run_ocr(image_paths, lang)
-
-        # בניית PDF
-        print("  → בונה PDF...", flush=True)
-        rl_stage = str(output_path) + '.stage.pdf'
-        c = canvas.Canvas(rl_stage)
-        page_sizes = []
-
-        for i, (img_path, (px_w, px_h)) in enumerate(image_paths):
-            pt_w = px_w * 72.0 / dpi
-            pt_h = px_h * 72.0 / dpi
-            page_sizes.append((pt_w, pt_h))
-            c.setPageSize((pt_w, pt_h))
-            c.drawImage(ImageReader(img_path), 0, 0, pt_w, pt_h)
-
-            # חותמת עגולה — כל העמודים
-            if stamp:
-                _draw_stamp(c, pt_w, pt_h)
-
-            txt = page_texts.get(str(i+1), '')
-            if txt:
-                c.saveState()
-                c.setFillColorRGB(0, 0, 0, alpha=0)
-                c.setFont('Helvetica', 10)
-                y = pt_h - 30
-                for line in txt.split('\n'):
-                    if y < 20: break
-                    try: c.drawString(30, y, line)
-                    except: pass
-                    y -= 14
-                c.restoreState()
-
-            c.showPage()
-        c.save()
-
-        # תיוג PDF/UA
-        print("  → מוסיף תיוג PDF/UA...", flush=True)
-        pdf = pikepdf.open(rl_stage)
-
-        with pdf.open_metadata() as meta:
-            meta['dc:title']     = title
-            meta['dc:language']  = lang
-            meta['pdf:Producer'] = 'Eilat Municipality Accessibility Tool'
-            meta['pdfuaid:part'] = '1'
-
-        pdf.Root['/Lang']    = String(lang)
-        pdf.Root['/MarkInfo'] = Dictionary(Marked=Boolean(True))
-        pdf.Root['/ViewerPreferences'] = Dictionary(
-            Direction=Name('/R2L'), DisplayDocTitle=Boolean(True))
-        pdf.docinfo['/Title']    = title
-        pdf.docinfo['/Producer'] = 'Eilat Municipality Accessibility Tool'
-
-        doc_kids   = Array()
-        mcid_ctr   = [0]
-        ptree_map  = {}
-
-        for pi, page in enumerate(pdf.pages):
-            pn    = pi + 1
-            ptitle = (page_titles or {}).get(str(pn), f'\u05e2\u05de\u05d5\u05d3 {pn}')
-            ptext  = page_texts.get(str(pn), '')
-
-            h1_m = mcid_ctr[0]; mcid_ctr[0] += 1
-            h1 = Dictionary(Type=Name('/StructElem'), S=Name('/H1'),
-                            Lang=String(lang), ActualText=String(ptitle), K=h1_m)
-            h1_ref = pdf.make_indirect(h1)
-
-            p_m = mcid_ctr[0]; mcid_ctr[0] += 1
-            p = Dictionary(Type=Name('/StructElem'), S=Name('/P'),
-                           Lang=String(lang),
-                           ActualText=String(ptext[:500] if ptext else f'\u05e2\u05de\u05d5\u05d3 {pn}'),
-                           K=p_m)
-            p_ref = pdf.make_indirect(p)
-
-            kids = Array([h1_ref, p_ref])
-
-            for tbl in (tables_data or {}).get(str(pn), []):
-                th_kids = Array()
-                for hdr in tbl.get('headers', []):
-                    th_m = mcid_ctr[0]; mcid_ctr[0] += 1
-                    th = Dictionary(Type=Name('/StructElem'), S=Name('/TH'),
-                                    Scope=Name('/Col'), Lang=String(lang),
-                                    ActualText=String(hdr), K=th_m)
-                    th_kids.append(pdf.make_indirect(th))
-                tbl_e = Dictionary(Type=Name('/StructElem'), S=Name('/Table'),
-                                   Lang=String(lang),
-                                   Summary=String(tbl.get('summary','')), K=th_kids)
-                kids.append(pdf.make_indirect(tbl_e))
-
-            sect = Dictionary(Type=Name('/StructElem'), S=Name('/Sect'),
-                              Lang=String(lang), K=kids)
-            sr = pdf.make_indirect(sect)
-            doc_kids.append(sr)
-            page.obj['/Tabs'] = Name('/S')
-            page.obj['/StructParents'] = pi
-
-            # ParentTree: כל MCID מקושר לאלמנט הישיר שלו (לא ל-Sect)
-            # PAC דורש מיפוי מדויק: MCID → StructElem
-            ptree_map[pi] = Array([h1_ref, p_ref])
-
-        ptree_arr = Array()
-        for i in range(num_pages):
-            ptree_arr.append(ptree_map.get(i, Array()))
-
-        struct_doc = Dictionary(Type=Name('/StructElem'), S=Name('/Document'),
-                                Lang=String(lang), K=doc_kids)
-        struct_root = Dictionary(
-            Type=Name('/StructTreeRoot'),
-            K=pdf.make_indirect(struct_doc),
-            ParentTree=pdf.make_indirect(Dictionary(Nums=ptree_arr)),
-        )
-        pdf.Root['/StructTreeRoot'] = pdf.make_indirect(struct_root)
-
-        if num_pages >= 9:
-            _add_bookmarks(pdf, page_titles, num_pages)
-
-        pdf.save(str(output_path), fix_metadata_version=True)
-        pdf.close()
-        os.unlink(rl_stage)
-
-        # תיקון PAC — הוספת BDC/EMC markers לכל עמוד
-        _patch_bdc_emc(str(output_path), num_pages)
-
-    print(f"  \u2713 הושלם: {output_path}", flush=True)
-    return num_pages
-
-
-def _add_bookmarks(pdf, page_titles, num_pages):
-    try:
-        items = Array()
-        for i, page in enumerate(pdf.pages):
-            label = (page_titles or {}).get(str(i+1), f'\u05e2\u05de\u05d5\u05d3 {i+1}')
-            items.append(pdf.make_indirect(
-                Dictionary(Title=String(label), Dest=Array([page.obj, Name('/Fit')]))))
-        pdf.Root['/Outlines'] = pdf.make_indirect(
-            Dictionary(Type=Name('/Outlines'), Count=num_pages,
-                       First=items[0], Last=items[-1]))
-        pdf.Root['/PageMode'] = Name('/UseOutlines')
-    except Exception:
-        pass
-
-
-def _patch_bdc_emc(output_path: str, num_pages: int):
-    """
-    מוסיף BDC/EMC markers לכל עמוד — נדרש ל-PAC ו-Matterhorn Protocol.
-    כל עמוד מקבל BDC אחד (Artifact לתמונה + P לטקסט).
-    """
-    pdf = pikepdf.open(output_path, allow_overwriting_input=True)
-
-    for pi, page in enumerate(pdf.pages):
-        if '/Contents' not in page:
-            continue
-
-        contents = page['/Contents']
-        if isinstance(contents, pikepdf.Array):
-            streams = list(contents)
-        else:
-            streams = [contents]
-
-        patched = []
-        for stream in streams:
+        text_content = page_texts.get(i, "")
+        if text_content:
             try:
-                data = stream.read_bytes()
+                txt = c.beginText(8, ph - 16)
+                txt.setTextRenderMode(3)
+                txt.setFont(font_name, 9)
+                for line in text_content.split("\n")[:80]:
+                    txt.textLine(line[:200])
+                c.drawText(txt)
             except Exception:
-                patched.append(stream)
-                continue
+                pass
 
-            # תמונת הרקע → Artifact
-            # טקסט + תוכן → P עם MCID
-            mcid_p = pi * 2 + 1
+        if stamp:
+            try:
+                from reportlab.lib.units import mm
+                R = 7 * mm
+                MARGIN = 4 * mm
+                cx = pw - MARGIN - R
+                cy = ph - MARGIN - R
+                c.saveState()
+                c.setStrokeColor(stamp_color)
+                c.setLineWidth(1.2)
+                c.circle(cx, cy, R, stroke=1, fill=0)
+                c.setLineCap(1)
+                c.setLineJoin(1)
+                c.setLineWidth(1.6)
+                p2 = c.beginPath()
+                p2.moveTo(cx - R*0.40, cy + R*0.08)
+                p2.lineTo(cx - R*0.08, cy - R*0.35)
+                p2.lineTo(cx + R*0.44, cy + R*0.40)
+                c.drawPath(p2, stroke=1, fill=0)
+                c.setFillColor(stamp_color)
+                c.setFont(font_name, 5)
+                c.drawCentredString(cx, cy - R*0.80, '\u05e0\u05d2\u05d9\u05e9')
+                c.restoreState()
+            except Exception:
+                pass
 
-            new_data = (
-                b'/Artifact <</Type /Background>> BDC\n' +
-                b'EMC\n' +
-                f'/P <</MCID {mcid_p}>> BDC\n'.encode() +
-                data +
-                b'\nEMC\n'
-            )
+        c.showPage()
+    c.save()
+    print(f"PDF בסיסי: {output_path}")
 
-            new_stream = pikepdf.Stream(pdf, new_data)
-            patched.append(new_stream)
 
-        if len(patched) == 1:
-            page['/Contents'] = patched[0]
-        else:
-            page['/Contents'] = pikepdf.Array(patched)
+def patch_stream(raw, p_mcid, page_w, page_h):
+    bbox = f"[0 0 {page_w:.1f} {page_h:.1f}]".encode()
+    bt_pos = -1
+    for needle in (b"\nBT\n", b"\nBT "):
+        pos = raw.find(needle)
+        if pos >= 0 and (bt_pos < 0 or pos < bt_pos):
+            bt_pos = pos + 1
+    if bt_pos < 0:
+        return (b"/Artifact <</Type /Layout /BBox " + bbox + b">> BDC\n" +
+                raw + b"\n" + b"EMC\n")
+    last_Q = raw.rfind(b"\nQ\n", 0, bt_pos)
+    search_from = last_Q if last_Q >= 0 else 0
+    unclosed_q = raw.find(b"\nq\n", search_from, bt_pos)
+    split_pos = (unclosed_q + 1) if unclosed_q >= 0 else bt_pos
+    image_part = raw[:split_pos].rstrip(b" \n")
+    text_part = raw[split_pos:]
+    return (b"/Artifact <</Type /Layout /BBox " + bbox + b">> BDC\n" +
+            image_part + b"\n" + b"EMC\n" +
+            b"/P <</MCID " + str(p_mcid).encode() + b">> BDC\n" +
+            text_part.strip(b" \n") + b"\n" + b"EMC\n")
 
-    # תיקון ParentTree — כל MCID מצביע על ref נכון
-    st = pdf.Root['/StructTreeRoot']
-    doc_elem = st['/K']
-    sects = doc_elem['/K']
 
-    nums_array = pikepdf.Array()
-    for pi in range(num_pages):
-        mcid_p = pi * 2 + 1
-        sect = sects[pi]
-        kids = sect['/K']
-        p_ref = kids[1]  # P element
-        # MCID → ref לאלמנט P
-        nums_array.append(pikepdf.objects.Integer(mcid_p))
-        nums_array.append(p_ref)
+def add_bookmarks(pdf, pages, page_titles, page_texts):
+    import pikepdf
+    from pikepdf import Dictionary, Array, Name, String
+    n = len(pages)
+    items = []
+    for pg_idx, page in enumerate(pages, 1):
+        title = (page_titles.get(str(pg_idx)) or page_titles.get(pg_idx) or
+                 (page_texts.get(pg_idx, "").split("\n")[0].strip() if page_texts.get(pg_idx) else "") or
+                 f"\u05e2\u05de\u05d5\u05d3 {pg_idx}")
+        item = pdf.make_indirect(Dictionary(
+            Title=String(title),
+            Dest=Array([page.obj, Name("/Fit")]),
+            Count=pikepdf.objects.Integer(0),
+        ))
+        items.append(item)
+    outline_root = pdf.make_indirect(Dictionary(
+        Type=Name("/Outlines"),
+        Count=pikepdf.objects.Integer(n),
+    ))
+    for i, item in enumerate(items):
+        item["/Parent"] = outline_root
+        if i > 0: item["/Prev"] = items[i-1]
+        if i < n-1: item["/Next"] = items[i+1]
+    outline_root["/First"] = items[0]
+    outline_root["/Last"] = items[-1]
+    pdf.Root["/Outlines"] = outline_root
+    pdf.Root["/PageMode"] = Name("/UseOutlines")
 
-    st['/ParentTree'] = pdf.make_indirect(
-        Dictionary(Nums=nums_array)
+
+_WINANSI_TOUNICODE = b"""\
+/CIDInit /ProcSet findresource begin
+12 dict begin
+begincmap
+/CIDSystemInfo <</Registry (Adobe) /Ordering (UCS) /Supplement 0>> def
+/CMapName /Adobe-WinAnsi-UCS def
+/CMapType 2 def
+1 begincodespacerange <20> <FF> endcodespacerange
+95 beginbfchar
+<20> <0020> <21> <0021> <22> <0022> <23> <0023> <24> <0024>
+<25> <0025> <26> <0026> <27> <0027> <28> <0028> <29> <0029>
+<2A> <002A> <2B> <002B> <2C> <002C> <2D> <002D> <2E> <002E>
+<2F> <002F> <30> <0030> <31> <0031> <32> <0032> <33> <0033>
+<34> <0034> <35> <0035> <36> <0036> <37> <0037> <38> <0038>
+<39> <0039> <3A> <003A> <3B> <003B> <3C> <003C> <3D> <003D>
+<3E> <003E> <3F> <003F> <40> <0040> <41> <0041> <42> <0042>
+<43> <0043> <44> <0044> <45> <0045> <46> <0046> <47> <0047>
+<48> <0048> <49> <0049> <4A> <004A> <4B> <004B> <4C> <004C>
+<4D> <004D> <4E> <004E> <4F> <004F> <50> <0050> <51> <0051>
+<52> <0052> <53> <0053> <54> <0054> <55> <0055> <56> <0056>
+<57> <0057> <58> <0058> <59> <0059> <5A> <005A> <5B> <005B>
+<5C> <005C> <5D> <005D> <5E> <005E> <5F> <005F> <60> <0060>
+<61> <0061> <62> <0062> <63> <0063> <64> <0064> <65> <0065>
+<66> <0066> <67> <0067> <68> <0068> <69> <0069> <6A> <006A>
+<6B> <006B> <6C> <006C> <6D> <006D> <6E> <006E> <6F> <006F>
+<70> <0070> <71> <0071> <72> <0072> <73> <0073> <74> <0074>
+<75> <0075> <76> <0076> <77> <0077> <78> <0078> <79> <0079>
+<7A> <007A> <7B> <007B> <7C> <007C> <7D> <007D> <7E> <007E>
+endbfchar
+endcmap
+CMapName currentdict /CMap defineresource pop
+end
+end
+"""
+
+
+def fix_standard_font_encoding(pdf):
+    import pikepdf
+    from pikepdf import Stream
+    fixed = set()
+    for page in pdf.pages:
+        resources = page.obj.get("/Resources", {})
+        font_dict = resources.get("/Font", {})
+        for fname, fref in font_dict.items():
+            try:
+                f = pdf.get_object(fref.objgen)
+                if "/ToUnicode" not in f:
+                    key = str(fref.objgen)
+                    if key not in fixed:
+                        f["/ToUnicode"] = pdf.make_indirect(Stream(pdf, _WINANSI_TOUNICODE))
+                        fixed.add(key)
+            except Exception:
+                pass
+    if fixed:
+        print(f"   ToUnicode הוזרק ל-{len(fixed)} פונטים")
+
+
+def add_pdfua_tags(input_pdf, output_pdf, lang="he-IL", title="\u05de\u05e1\u05de\u05da \u05e0\u05d2\u05d9\u05e9",
+                   page_texts=None, page_titles=None, tables_info=None):
+    import pikepdf
+    from pikepdf import Dictionary, Array, Name, String, Stream
+
+    if page_texts is None: page_texts = {}
+    if page_titles is None: page_titles = {}
+    if tables_info is None: tables_info = {}
+
+    print("\u05de\u05d5\u05e1\u05d9\u05e3 \u05ea\u05d9\u05d5\u05d2 PDF/UA...")
+    pdf = pikepdf.open(input_pdf)
+    pages = list(pdf.pages)
+
+    fix_standard_font_encoding(pdf)
+
+    pdf.Root["/Lang"] = String(lang)
+    pdf.Root["/ViewerPreferences"] = pdf.make_indirect(Dictionary(
+        Direction=Name("/R2L"),
+        DisplayDocTitle=pikepdf.objects.Boolean(True),
+    ))
+
+    with pdf.open_metadata() as meta:
+        meta["dc:title"] = title
+        meta["dc:language"] = lang
+        try:
+            meta["pdfuaid:part"] = "1"
+        except Exception:
+            pass
+
+    try:
+        if "/Info" not in pdf.trailer:
+            pdf.trailer["/Info"] = pdf.make_indirect(Dictionary())
+        pdf.trailer["/Info"]["/Title"] = String(title)
+    except Exception:
+        pass
+
+    pdf.Root["/MarkInfo"] = pdf.make_indirect(
+        Dictionary(Marked=pikepdf.objects.Boolean(True))
     )
 
-    pdf.save(output_path)
-    pdf.close()
-    print("  → BDC/EMC + ParentTree תוקנו", flush=True)
+    parent_tree_map = {}
+    P_MCID = 0
+
+    def make_elem(stype, parent, title_text="", actual_text="", alt_text="", page_obj=None, mcid=None):
+        d = Dictionary(Type=Name("/StructElem"), S=Name(f"/{stype}"), P=parent)
+        if title_text: d["/T"] = String(title_text)
+        if actual_text: d["/ActualText"] = String(actual_text)
+        if alt_text: d["/Alt"] = String(alt_text)
+        if mcid is not None and page_obj is not None:
+            d["/K"] = pikepdf.objects.Integer(mcid)
+            d["/Pg"] = page_obj
+        return pdf.make_indirect(d)
+
+    str_root = pdf.make_indirect(Dictionary(Type=Name("/StructTreeRoot"), Lang=String(lang)))
+    doc_elem = make_elem("Document", str_root, title_text=title)
+    str_root["/K"] = Array([doc_elem])
+    sect_elems = []
+    page_patch_info = []
+
+    for pg_idx, page in enumerate(pages, 1):
+        pg_idx_0 = pg_idx - 1
+        page_obj = page.obj
+        page_obj["/Tabs"] = Name("/S")
+        page_obj["/StructParents"] = pikepdf.objects.Integer(pg_idx_0)
+
+        media = page_obj.get("/MediaBox")
+        pw = float(media[2]) if media else 595.0
+        ph = float(media[3]) if media else 842.0
+
+        page_text = page_texts.get(pg_idx, "")
+        page_title = (page_titles.get(str(pg_idx)) or page_titles.get(pg_idx) or
+                      (page_text.split("\n")[0].strip() if page_text else f"\u05e2\u05de\u05d5\u05d3 {pg_idx}"))
+
+        sect = make_elem("Sect", doc_elem, title_text=f"\u05e2\u05de\u05d5\u05d3 {pg_idx}")
+        sect_elems.append(sect)
+        children = []
+
+        h1 = make_elem("H1", sect, actual_text=page_title, alt_text=page_title)
+        children.append(h1)
+
+        body = "\n".join(page_text.split("\n")[1:]).strip() if "\n" in page_text else ""
+        p = make_elem("P", sect,
+                      actual_text=body or f"\u05ea\u05d5\u05db\u05df \u05e2\u05de\u05d5\u05d3 {pg_idx}",
+                      page_obj=page_obj, mcid=P_MCID)
+        children.append(p)
+        parent_tree_map[pg_idx_0] = [p]
+
+        for tbl_def in tables_info.get(str(pg_idx), tables_info.get(pg_idx, [])):
+            summary = tbl_def.get("summary") or f"\u05d8\u05d1\u05dc\u05d4 \u05d1\u05e2\u05de\u05d5\u05d3 {pg_idx}"
+            headers = tbl_def.get("headers", [])
+            tbl = make_elem("Table", sect)
+            tbl["/Summary"] = String(summary)
+            tbl_children = []
+            if headers:
+                tr_h = make_elem("TR", tbl)
+                th_list = []
+                for hdr in headers:
+                    th = make_elem("TH", tr_h, actual_text=hdr, alt_text=hdr)
+                    th["/Scope"] = Name("/Col")
+                    th_list.append(th)
+                tr_h["/K"] = Array(th_list)
+                tbl_children.append(tr_h)
+            tbl["/K"] = Array(tbl_children)
+            children.append(tbl)
+
+        sect["/K"] = Array(children)
+        page_patch_info.append((P_MCID, pw, ph))
+
+    doc_elem["/K"] = Array(sect_elems)
+
+    flat = []
+    for pg_idx_0 in sorted(parent_tree_map.keys()):
+        flat.append(pikepdf.objects.Integer(pg_idx_0))
+        flat.append(Array(parent_tree_map[pg_idx_0]))
+    str_root["/ParentTree"] = pdf.make_indirect(Dictionary(Nums=Array(flat)))
+    str_root["/ParentTreeNextKey"] = pikepdf.objects.Integer(len(parent_tree_map))
+    pdf.Root["/StructTreeRoot"] = str_root
+
+    for pg_idx, page in enumerate(pages):
+        m_p, pw, ph = page_patch_info[pg_idx]
+        try:
+            raw_obj = page.obj.get("/Contents")
+            if raw_obj is None: continue
+            def get_bytes(obj):
+                if hasattr(obj, "read_bytes"): return obj.read_bytes()
+                if isinstance(obj, pikepdf.Array): return b"".join(get_bytes(x) for x in obj)
+                return b""
+            orig = get_bytes(raw_obj)
+            new_data = patch_stream(orig, m_p, pw, ph)
+            page.obj["/Contents"] = pdf.make_indirect(Stream(pdf, new_data))
+        except Exception as e:
+            print(f"   content stream עמוד {pg_idx + 1}: {e}")
+
+    add_bookmarks(pdf, pages, page_titles, page_texts)
+    pdf.save(output_pdf)
+    print(f"\u2705 PDF \u05e0\u05d2\u05d9\u05e9: {output_pdf}")
 
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument('--input',       required=True)
-    ap.add_argument('--output',      required=True)
-    ap.add_argument('--lang',        default='he-IL')
-    ap.add_argument('--title',       default='')
-    ap.add_argument('--dpi',         type=int, default=200)
-    ap.add_argument('--stamp',       action='store_true')
-    ap.add_argument('--force-ocr',   action='store_true')
-    ap.add_argument('--text-json',   default=None)
-    ap.add_argument('--page-titles', default=None)
-    ap.add_argument('--tables-json', default=None)
-    args = ap.parse_args()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input",        required=True)
+    parser.add_argument("--output",       required=True)
+    parser.add_argument("--lang",         default="he-IL")
+    parser.add_argument("--title",        default="\u05de\u05e1\u05de\u05da \u05e0\u05d2\u05d9\u05e9")
+    parser.add_argument("--dpi",          type=int, default=200)
+    parser.add_argument("--stamp",        action="store_true")
+    parser.add_argument("--ocr",          action="store_true")
+    parser.add_argument("--force-ocr",    action="store_true")
+    parser.add_argument("--text-json",    default=None)
+    parser.add_argument("--page-titles",  default=None)
+    parser.add_argument("--tables-json",  default=None)
+    args = parser.parse_args()
 
-    pages = build_accessible_pdf(
-        input_path  = args.input,
-        output_path = args.output,
-        lang        = args.lang,
-        title       = args.title,
-        dpi         = args.dpi,
-        stamp       = args.stamp,
-        force_ocr   = getattr(args, 'force_ocr', False),
-        text_data   = json.loads(Path(args.text_json).read_text('utf-8'))   if args.text_json   else None,
-        page_titles = json.loads(Path(args.page_titles).read_text('utf-8')) if args.page_titles else None,
-        tables_data = json.loads(Path(args.tables_json).read_text('utf-8')) if args.tables_json else None,
-    )
-    print(f'עמודים: {pages}')
+    ensure_deps()
 
-if __name__ == '__main__':
+    page_texts = {}
+    if args.text_json and os.path.exists(args.text_json):
+        with open(args.text_json, encoding="utf-8") as f:
+            page_texts = {int(k): v for k, v in json.load(f).items()}
+
+    page_titles = {}
+    if args.page_titles and os.path.exists(args.page_titles):
+        with open(args.page_titles, encoding="utf-8") as f:
+            page_titles = json.load(f)
+
+    tables_info = {}
+    if args.tables_json and os.path.exists(args.tables_json):
+        with open(args.tables_json, encoding="utf-8") as f:
+            tables_info = json.load(f)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        pages_dir = os.path.join(tmpdir, "pages")
+        os.makedirs(pages_dir)
+        base_pdf = os.path.join(tmpdir, "base.pdf")
+
+        # זיהוי אוטומטי: ממחשב vs סרוק
+        pdf_type, existing_texts = detect_pdf_type(args.input)
+        if not page_texts:
+            if pdf_type == 'digital' and not getattr(args, 'force_ocr', False):
+                page_texts = existing_texts
+            elif args.ocr or getattr(args, 'force_ocr', False):
+                page_paths_tmp = extract_pages(args.input, pages_dir, dpi=args.dpi)
+                page_texts = run_ocr(page_paths_tmp, lang_code=args.lang)
+
+        page_paths = extract_pages(args.input, pages_dir, dpi=args.dpi)
+        build_image_pdf(page_paths, page_texts, base_pdf, stamp=args.stamp)
+        add_pdfua_tags(base_pdf, args.output,
+                       lang=args.lang, title=args.title,
+                       page_texts=page_texts,
+                       page_titles=page_titles,
+                       tables_info=tables_info)
+
+
+if __name__ == "__main__":
     main()
