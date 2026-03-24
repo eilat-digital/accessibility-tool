@@ -221,14 +221,16 @@ def build_accessible_pdf(
             h1_m = mcid_ctr[0]; mcid_ctr[0] += 1
             h1 = Dictionary(Type=Name('/StructElem'), S=Name('/H1'),
                             Lang=String(lang), ActualText=String(ptitle), K=h1_m)
+            h1_ref = pdf.make_indirect(h1)
 
             p_m = mcid_ctr[0]; mcid_ctr[0] += 1
             p = Dictionary(Type=Name('/StructElem'), S=Name('/P'),
                            Lang=String(lang),
                            ActualText=String(ptext[:500] if ptext else f'\u05e2\u05de\u05d5\u05d3 {pn}'),
                            K=p_m)
+            p_ref = pdf.make_indirect(p)
 
-            kids = Array([pdf.make_indirect(h1), pdf.make_indirect(p)])
+            kids = Array([h1_ref, p_ref])
 
             for tbl in (tables_data or {}).get(str(pn), []):
                 th_kids = Array()
@@ -249,7 +251,10 @@ def build_accessible_pdf(
             doc_kids.append(sr)
             page.obj['/Tabs'] = Name('/S')
             page.obj['/StructParents'] = pi
-            ptree_map[pi] = Array([sr])
+
+            # ParentTree: כל MCID מקושר לאלמנט הישיר שלו (לא ל-Sect)
+            # PAC דורש מיפוי מדויק: MCID → StructElem
+            ptree_map[pi] = Array([h1_ref, p_ref])
 
         ptree_arr = Array()
         for i in range(num_pages):
