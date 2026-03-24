@@ -83,41 +83,40 @@ def run_ocr(image_paths: list, lang_code: str = 'he-IL') -> dict:
 # ── חותמת עגולה שקופה ────────────────────────────────────────────────────────────
 def _draw_stamp(c, pt_w, pt_h):
     """
-    חותמת עגולה כתומה שקופה — פינה ימנית עליונה, עמוד אחרון בלבד.
-    עיגול + ✓ + "נגיש"
+    חותמת עגולה כתומה שקופה — פינה ימנית עליונה, כל העמודים.
+    עיגול קטן + ✓ + "נגיש"
     """
     from reportlab.lib.units import mm
-    import math
 
     ORANGE = (0.878, 0.361, 0.125)  # #E05C20
-    ALPHA  = 0.75
-    R      = 14 * mm          # רדיוס העיגול
-    MARGIN = 6 * mm
+    ALPHA  = 0.72
+    R      = 7 * mm        # קטן — 7mm רדיוס
+    MARGIN = 4 * mm
     cx     = pt_w - MARGIN - R
     cy     = pt_h - MARGIN - R
 
     c.saveState()
 
-    # עיגול שקוף
+    # עיגול
     c.setStrokeColorRGB(*ORANGE, alpha=ALPHA)
-    c.setLineWidth(1.5)
+    c.setFillColorRGB(*ORANGE, alpha=0)
+    c.setLineWidth(1.2)
     c.circle(cx, cy, R, stroke=1, fill=0)
 
-    # ✓  — מצויר כנתיב
-    c.setLineCap(1)   # round
-    c.setLineJoin(1)  # round
-    c.setLineWidth(2)
+    # ✓
+    c.setLineCap(1)
+    c.setLineJoin(1)
+    c.setLineWidth(1.6)
     p = c.beginPath()
-    # נקודות ✓: שמאל-תחת → מרכז → ימין-עליון
-    p.moveTo(cx - R*0.38, cy + R*0.05)
-    p.lineTo(cx - R*0.08, cy - R*0.32)
-    p.lineTo(cx + R*0.42, cy + R*0.38)
+    p.moveTo(cx - R*0.40, cy + R*0.08)
+    p.lineTo(cx - R*0.08, cy - R*0.35)
+    p.lineTo(cx + R*0.44, cy + R*0.40)
     c.drawPath(p, stroke=1, fill=0)
 
-    # "נגיש" מתחת ל-✓
+    # "נגיש" — ברור יותר
     c.setFillColorRGB(*ORANGE, alpha=ALPHA)
-    c.setFont('Helvetica-Bold', 6.5)
-    c.drawCentredString(cx, cy - R*0.72, '\u05e0\u05d2\u05d9\u05e9')
+    c.setFont('Helvetica-Bold', 5)
+    c.drawCentredString(cx, cy - R*0.80, '\u05e0\u05d2\u05d9\u05e9')
 
     c.restoreState()
 
@@ -173,8 +172,8 @@ def build_accessible_pdf(
             c.setPageSize((pt_w, pt_h))
             c.drawImage(ImageReader(img_path), 0, 0, pt_w, pt_h)
 
-            # חותמת עגולה — עמוד אחרון בלבד
-            if stamp and i == num_pages - 1:
+            # חותמת עגולה — כל העמודים
+            if stamp:
                 _draw_stamp(c, pt_w, pt_h)
 
             txt = page_texts.get(str(i+1), '')
