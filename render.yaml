@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: eilat-accessibility
+    runtime: python
+    buildCommand: apt-get install -y poppler-utils tesseract-ocr tesseract-ocr-heb && pip install -r requirements.txt
+    startCommand: python app.py
+    plan: free
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+    disk:
+      name: accessibility-data
+      mountPath: /opt/render/project/src
+      sizeGB: 1

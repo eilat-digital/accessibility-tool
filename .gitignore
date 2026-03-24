@@ -1,0 +1,11 @@
+uploads/
+outputs/
+db/
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.env
+test_input.pdf
+test_output.pdf
+*.zip
