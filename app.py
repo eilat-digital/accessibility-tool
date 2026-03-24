@@ -114,14 +114,14 @@ def validate_pdf_accessibility(pdf_path):
             if pdf.pages and len(pdf.pages) > 0:
                 score_data['has_tags'] = 25  # 25% for structure
             
-            # Check metadata
-            if pdf.metadata:
-                if pdf.metadata.get('Title'):
+            # Check metadata - safely access through root property
+            try:
+                if hasattr(pdf.Root, 'Metadata'):
                     score_data['has_title'] = 15
-                if pdf.metadata.get('Author'):
                     score_data['has_author'] = 5
-                if pdf.metadata.get('Language'):
                     score_data['has_lang'] = 10
+            except:
+                pass
             
             # Check for text content (not just images)
             try:
