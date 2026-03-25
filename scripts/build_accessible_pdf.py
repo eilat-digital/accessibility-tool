@@ -180,6 +180,56 @@ def apply_stamp_to_pdf(pdf_path):
             os.remove(tmp)
 
 
+def describe_pages_with_ai(page_paths, lang_code="he-IL"):
+    """Use Claude Vision (Haiku) to describe each page for WCAG 1.1.1 alt text.
+    Only runs when ANTHROPIC_API_KEY env var is set. Returns {page_num: description}."""
+    import os
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        return {}
+    try:
+        import anthropic
+        import base64
+        import io
+        from PIL import Image as PILImage
+    except ImportError:
+        print("  AI: חסרות תלויות (anthropic/Pillow)")
+        return {}
+
+    lang_map = {"he-IL": "בעברית", "he": "בעברית", "ar": "بالعربية",
+                "en-US": "in English", "en": "in English"}
+    lang_word = lang_map.get(lang_code, "בעברית")
+
+    client = anthropic.Anthropic()
+    descriptions = {}
+    print(f"  AI: מתאר {len(page_paths)} עמודים {lang_word} (WCAG 1.1.1)...")
+
+    for i, path in enumerate(page_paths, 1):
+        try:
+            img = PILImage.open(path)
+            img.thumbnail((800, 800))
+            buf = io.BytesIO()
+            img.save(buf, "JPEG", quality=75)
+            data = base64.standard_b64encode(buf.getvalue()).decode("utf-8")
+
+            resp = client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=250,
+                messages=[{"role": "user", "content": [
+                    {"type": "image",
+                     "source": {"type": "base64", "media_type": "image/jpeg", "data": data}},
+                    {"type": "text",
+                     "text": (f"תאר {lang_word} את תוכן הדף הזה בקצרה (2-3 משפטים), "
+                              "כולל תמונות וגרפיקה, לצורך נגישות לאנשים עם לקות ראייה.")}
+                ]}]
+            )
+            descriptions[i] = resp.content[0].text.strip()
+            print(f"  AI עמוד {i}: ✓")
+        except Exception as e:
+            print(f"  AI עמוד {i}: {e}")
+
+    return descriptions
+
+
 def detect_pdf_type(input_path):
     try:
         import pikepdf
@@ -348,13 +398,15 @@ def fix_standard_font_encoding(pdf):
 
 
 def add_pdfua_tags(input_pdf, output_pdf, lang="he-IL", title="\u05de\u05e1\u05de\u05da \u05e0\u05d2\u05d9\u05e9",
-                   page_texts=None, page_titles=None, tables_info=None, pdf_type="scanned"):
+                   page_texts=None, page_titles=None, tables_info=None, pdf_type="scanned",
+                   ai_descriptions=None):
     import pikepdf
     from pikepdf import Dictionary, Array, Name, String, Stream
 
     if page_texts is None: page_texts = {}
     if page_titles is None: page_titles = {}
     if tables_info is None: tables_info = {}
+    if ai_descriptions is None: ai_descriptions = {}
 
     print("\u05de\u05d5\u05e1\u05d9\u05e3 \u05ea\u05d9\u05d5\u05d2 PDF/UA...")
     pdf = pikepdf.open(input_pdf)
@@ -430,7 +482,10 @@ def add_pdfua_tags(input_pdf, output_pdf, lang="he-IL", title="\u05de\u05e1\u05d
         page_title = (page_titles.get(str(pg_idx)) or page_titles.get(pg_idx) or
                       (page_text.split("\n")[0].strip() if page_text else f"\u05e2\u05de\u05d5\u05d3 {pg_idx}"))
 
-        sect = make_elem("Sect", doc_elem, title_text=f"\u05e2\u05de\u05d5\u05d3 {pg_idx}")
+        ai_desc = ai_descriptions.get(pg_idx, "")
+        sect = make_elem("Sect", doc_elem,
+                         title_text=f"\u05e2\u05de\u05d5\u05d3 {pg_idx}",
+                         alt_text=ai_desc if ai_desc else "")
         sect_elems.append(sect)
         children = []
 
@@ -544,6 +599,7 @@ def main():
         if not page_texts:
             page_texts = existing_texts if pdf_type == 'digital' else {}
 
+        ai_descriptions = {}
         if pdf_type == 'digital' and not getattr(args, 'force_ocr', False):
             # WCAG 1.4.5: preserve original text — do NOT rasterize digital PDFs.
             # Converting to images would turn selectable text into image-of-text,
@@ -551,6 +607,13 @@ def main():
             import shutil
             shutil.copy2(args.input, base_pdf)
             print("  PDF ממחשב: שומר טקסט מקורי (WCAG 1.4.5)")
+            # WCAG 1.1.1: describe page visuals with AI when API key is available
+            import os
+            if os.environ.get("ANTHROPIC_API_KEY"):
+                ai_pages_dir = os.path.join(tmpdir, "ai_pages")
+                os.makedirs(ai_pages_dir)
+                ai_paths = extract_pages(args.input, ai_pages_dir, dpi=72)
+                ai_descriptions = describe_pages_with_ai(ai_paths, lang_code=args.lang)
         else:
             # Scanned PDF: rasterize + optional OCR
             if not page_texts and args.ocr:
@@ -564,7 +627,8 @@ def main():
                        page_texts=page_texts,
                        page_titles=page_titles,
                        tables_info=tables_info,
-                       pdf_type=pdf_type)
+                       pdf_type=pdf_type,
+                       ai_descriptions=ai_descriptions)
 
         if args.stamp:
             apply_stamp_to_pdf(args.output)
