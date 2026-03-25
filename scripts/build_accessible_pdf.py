@@ -318,8 +318,13 @@ def add_pdfua_tags(input_pdf, output_pdf, lang="he-IL", title="\u05de\u05e1\u05d
     with pdf.open_metadata() as meta:
         meta["dc:title"] = title
         meta["dc:language"] = lang
+        # PDF/UA-1 identifier — required for WCAG 2.2 / PDF/UA compliance
         try:
             meta["pdfuaid:part"] = "1"
+        except Exception:
+            pass
+        try:
+            meta["pdfuaid:amd"] = "2012"
         except Exception:
             pass
 
@@ -333,6 +338,15 @@ def add_pdfua_tags(input_pdf, output_pdf, lang="he-IL", title="\u05de\u05e1\u05d
     pdf.Root["/MarkInfo"] = pdf.make_indirect(
         Dictionary(Marked=pikepdf.objects.Boolean(True))
     )
+
+    # RoleMap: map our structure types to standard PDF/UA roles
+    # Required for WCAG 2.2 / PDF/UA validators
+    pdf.Root["/RoleMap"] = pdf.make_indirect(Dictionary(
+        Sect=Name("/Div"),
+        H1=Name("/H"),
+        Figure=Name("/Figure"),
+        P=Name("/P"),
+    ))
 
     parent_tree_map = {}
     P_MCID = 0
@@ -472,14 +486,23 @@ def main():
         # זיהוי אוטומטי: ממחשב vs סרוק
         pdf_type, existing_texts = detect_pdf_type(args.input)
         if not page_texts:
-            if pdf_type == 'digital' and not getattr(args, 'force_ocr', False):
-                page_texts = existing_texts
-            elif args.ocr or getattr(args, 'force_ocr', False):
+            page_texts = existing_texts if pdf_type == 'digital' else {}
+
+        if pdf_type == 'digital' and not getattr(args, 'force_ocr', False):
+            # WCAG 1.4.5: preserve original text — do NOT rasterize digital PDFs.
+            # Converting to images would turn selectable text into image-of-text,
+            # which fails WCAG 2.2 criterion 1.4.5 and breaks screen readers.
+            import shutil
+            shutil.copy2(args.input, base_pdf)
+            print("  PDF ממחשב: שומר טקסט מקורי (WCAG 1.4.5)")
+        else:
+            # Scanned PDF: rasterize + optional OCR
+            if not page_texts and args.ocr:
                 page_paths_tmp = extract_pages(args.input, pages_dir, dpi=args.dpi)
                 page_texts = run_ocr(page_paths_tmp, lang_code=args.lang)
+            page_paths = extract_pages(args.input, pages_dir, dpi=args.dpi)
+            build_image_pdf(page_paths, page_texts, base_pdf, stamp=args.stamp)
 
-        page_paths = extract_pages(args.input, pages_dir, dpi=args.dpi)
-        build_image_pdf(page_paths, page_texts, base_pdf, stamp=args.stamp)
         add_pdfua_tags(base_pdf, args.output,
                        lang=args.lang, title=args.title,
                        page_texts=page_texts,
