@@ -110,13 +110,14 @@ def run_ocr(page_paths, lang_code="he-IL"):
 
 
 def _make_stamp_stream(pw, ph):
-    """Pure PDF graphics content stream for corner accessibility badge.
-    Wrapped in Artifact BDC/EMC so PAC does not flag it as untagged content."""
-    mm = 2.8346  # 1 mm in points
-    R  = 10.0 * mm
-    M  =  5.0 * mm
-    cx = pw - M - R   # center X — bottom-right corner
-    cy = M + R        # center Y
+    """Small, clean accessibility badge — bottom-right corner.
+    6mm radius disc: solid blue fill + white checkmark stroke.
+    Wrapped in Artifact so PAC does not flag it as untagged content."""
+    mm = 2.8346
+    R  = 6.0 * mm   # 6 mm radius — small and unobtrusive
+    M  = 4.0 * mm   # margin from edge
+    cx = pw - M - R
+    cy = M + R
     bbox = f"[{cx-R:.3f} {cy-R:.3f} {cx+R:.3f} {cy+R:.3f}]"
 
     def circ(x, y, r):
@@ -129,23 +130,21 @@ def _make_stamp_stream(pw, ph):
             f"{x-r:.3f} {y+k:.3f} {x-k:.3f} {y+r:.3f} {x:.3f} {y+r:.3f} c h"
         )
 
+    lw = R * 0.18   # checkmark stroke width
+
     ops = "\n".join([
         f"/Artifact <</Type /Layout /Attached [/Bottom /Right] /BBox {bbox}>> BDC",
         "q",
-        "0.102 0.306 0.541 rg",          # municipality blue — outer ring
+        # solid dark-blue disc
+        "0.102 0.306 0.541 rg",
         circ(cx, cy, R), "f",
-        "1 1 1 rg",                        # white separator
-        circ(cx, cy, R * 0.84), "f",
-        "0.110 0.486 0.290 rg",            # accessibility green — inner fill
-        circ(cx, cy, R * 0.72), "f",
-        "1 1 1 RG",                        # white checkmark stroke
-        f"{R * 0.14:.3f} w", "1 J 1 j",
-        (f"{cx - R*0.28:.3f} {cy + R*0.06:.3f} m "
-         f"{cx - R*0.04:.3f} {cy - R*0.30:.3f} l "
-         f"{cx + R*0.40:.3f} {cy + R*0.34:.3f} l"),
+        # white checkmark (✓): left-bottom → dip → upper-right
+        "1 1 1 RG",
+        f"{lw:.3f} w", "1 J 1 j",
+        (f"{cx - R*0.38:.3f} {cy + R*0.05:.3f} m "
+         f"{cx - R*0.10:.3f} {cy - R*0.32:.3f} l "
+         f"{cx + R*0.42:.3f} {cy + R*0.38:.3f} l"),
         "S",
-        "0.878 0.361 0.125 rg",            # Eilat orange accent dot
-        circ(cx + R*0.60, cy + R*0.60, R * 0.22), "f",
         "Q",
         "EMC",
     ])
