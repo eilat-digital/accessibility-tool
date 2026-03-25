@@ -316,127 +316,43 @@
   }
   .search-input:focus { border-color: var(--blue-l); }
 
-  /* ========== ANIMATIONS ========== */
-
+  /* Animations */
   @keyframes slideUp {
-    from {
-      opacity: 0;
-      transform: translateY(20px);
-    }
-    to {
-      opacity: 1;
-      transform: translateY(0);
-    }
+    from { opacity: 0; transform: translateY(20px); }
+    to { opacity: 1; transform: translateY(0); }
   }
-
   @keyframes fadeIn {
     from { opacity: 0; }
     to { opacity: 1; }
   }
-
   @keyframes spin {
     from { transform: rotate(0deg); }
     to { transform: rotate(360deg); }
   }
 
-  @keyframes pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.6; }
-  }
+  .result-box { animation: slideUp 0.5s ease-out forwards; }
+  .stat-card { animation: fadeIn 0.6s ease-out; }
+  .card { animation: fadeIn 0.4s ease-out; }
 
-  @keyframes shimmer {
-    0% { background-position: -1000px 0; }
-    100% { background-position: 1000px 0; }
-  }
+  .btn, .btn-download, .btn-sm { transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1); }
+  .btn:hover, .btn-download:hover, .btn-sm:hover { transform: translateY(-2px); box-shadow: var(--shadow-lg); }
+  .btn:active, .btn-download:active, .btn-sm:active { transform: translateY(0); }
 
-  /* Loading spinner */
-  .spinner {
-    width: 24px;
-    height: 24px;
-    border: 3px solid var(--blue-l);
-    border-top-color: var(--blue);
-    border-radius: 50%;
-    animation: spin 0.8s linear infinite;
-  }
+  table tbody tr { transition: background 0.2s ease; }
+  table tbody tr:hover { background: var(--bg); }
 
-  /* Apply animations */
-  .result-box {
-    animation: slideUp 0.5s ease-out forwards;
-  }
+  .stat-card { transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); }
+  .stat-card:hover { transform: translateY(-4px); box-shadow: var(--shadow-lg); }
 
-  .stat-card {
-    animation: fadeIn 0.6s ease-out;
-  }
+  .progress-bar { transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1); }
+  .badge { animation: slideUp 0.4s ease-out; }
 
-  .card {
-    animation: fadeIn 0.4s ease-out;
-  }
-
-  /* Button hover effects */
-  .btn, .btn-download, .btn-sm {
-    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-  }
-
-  .btn:hover, .btn-download:hover, .btn-sm:hover {
-    transform: translateY(-2px);
-    box-shadow: var(--shadow-lg);
-  }
-
-  .btn:active, .btn-download:active, .btn-sm:active {
-    transform: translateY(0);
-  }
-
-  /* Table row hover */
-  table tbody tr {
-    transition: background 0.2s ease;
-  }
-
-  table tbody tr:hover {
-    background: var(--bg);
-  }
-
-  /* Card hover effects */
-  .stat-card {
-    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  }
-
-  .stat-card:hover {
-    transform: translateY(-4px);
-    box-shadow: var(--shadow-lg);
-  }
-
-  /* Progress bar smooth animation */
-  .progress-bar {
-    transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1);
-  }
-
-  /* Badge animations */
-  .badge {
-    animation: slideUp 0.4s ease-out;
-  }
-
-  /* Desktop responsive improvements */
   @media (min-width: 1200px) {
-    main {
-      max-width: 1200px;
-      margin: 0 auto;
-    }
-    
-    .stats-bar {
-      gap: 1.5rem;
-    }
-    
-    .stat-card {
-      padding: 1.25rem;
-    }
-    
-    .card {
-      margin: 1.5rem 0;
-    }
-    
-    th, td {
-      padding: 0.9rem 1.25rem;
-    }
+    main { max-width: 1200px; margin: 0 auto; }
+    .stats-bar { gap: 1.5rem; }
+    .stat-card { padding: 1.25rem; }
+    .card { margin: 1.5rem 0; }
+    th, td { padding: 0.9rem 1.25rem; }
   }
 
   @media (max-width: 600px) {
@@ -568,7 +484,7 @@
           </tr>
         </thead>
         <tbody id="history-body">
-          <tr><td colspan="6"><div class="empty-history">טוען...</div></td></tr>
+          <tr><td colspan="7"><div class="empty-history">טוען...</div></td></tr>
         </tbody>
       </table>
     </div>
@@ -576,168 +492,13 @@
 </main>
 
 <script>
-    vertical-align: middle;
-  }
-  tr:last-child td { border-bottom: none; }
-  tr:hover td { background: var(--bg); }
-
-  .badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    padding: 2px 8px;
-    border-radius: 99px;
-    font-size: 11px;
-    font-weight: 500;
-  }
-  .badge-done    { background: var(--grn-s); color: var(--green); }
-  .badge-proc    { background: var(--blue-s); color: var(--blue-l); }
-  .badge-error   { background: var(--red-s); color: var(--red); }
-
-  .btn-sm {
-    padding: 4px 10px;
-    border-radius: 5px;
-    font-family: 'Heebo', sans-serif;
-    font-size: 12px;
-    cursor: pointer;
-    border: 1px solid var(--gray-4);
-    background: white;
-    color: var(--gray-2);
-    transition: all .15s;
-  }
-  .btn-sm:hover { background: var(--gray-5); }
-  .btn-sm.danger { color: var(--red); border-color: #FCA5A5; }
-  .btn-sm.danger:hover { background: var(--red-s); }
-  .btn-sm.primary { color: var(--blue-l); border-color: #93C5FD; }
-  .btn-sm.primary:hover { background: var(--blue-s); }
-
-  .actions { display: flex; gap: 6px; justify-content: flex-end; }
-
-  .empty-history {
-    text-align: center;
-    padding: 2.5rem;
-    color: var(--gray-3);
-    font-size: 13px;
-  }
-
-  /* Search */
-  .table-toolbar {
-    padding: .85rem 1.25rem;
-    border-bottom: 1px solid var(--gray-5);
-    display: flex;
-    align-items: center;
-    gap: .75rem;
-  }
-  .search-input {
-    flex: 1;
-    padding: .45rem .75rem;
-    border: 1px solid var(--gray-4);
-    border-radius: 6px;
-    font-family: 'Heebo', sans-serif;
-    font-size: 13px;
-    outline: none;
-    direction: rtl;
-  }
-  .search-input:focus { border-color: var(--blue-l); }
-
-  /* Stats bar */
-  .stats-bar {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 1rem;
-  }
-  .stat-card {
-    background: var(--white);
-    border-radius: var(--radius);
-    box-shadow: var(--shadow);
-    padding: 1rem 1.25rem;
-  }
-  .stat-label { font-size: 11px; color: var(--gray-3); font-weight: 500; text-transform: uppercase; letter-spacing: .04em; margin-bottom: .35rem; }
-  .stat-value { font-size: 24px; font-weight: 600; color: var(--gray-1); }
-  .stat-sub { font-size: 11px; color: var(--gray-3); margin-top: 2px; }
-
-  @media (max-width: 600px) {
-    .stats-bar { grid-template-columns: 1fr 1fr; }
-  }
-</style>
-</head>
-<body>
-
-<header>
-  <div class="logo-mark">נג</div>
-  <h1>מערכת הנגשת מסמכים</h1>
-  <span>עיריית אילת — מחלקה דיגיטלית</span>
-</header>
-
-<main>
-  <!-- Stats -->
-  <div class="stats-bar" id="stats-bar">
-    <div class="stat-card">
-      <div class="stat-label">סה"כ מסמכים</div>
-      <div class="stat-value" id="stat-total">—</div>
-      <div class="stat-sub">מאז ההתחלה</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">עמודים הונגשו</div>
-      <div class="stat-value" id="stat-pages">—</div>
-      <div class="stat-sub">עמודי PDF</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">היום</div>
-      <div class="stat-value" id="stat-today">—</div>
-      <div class="stat-sub">מסמכים</div>
-    </div>
-  </div>
-
-  <!-- History -->
-  <div class="card">
-    <div class="card-header">
-      <div class="card-icon icon-gray">🕓</div>
-      <h2>היסטוריית מסמכים</h2>
-    </div>
-
-    <div class="table-toolbar">
-      <input class="search-input" id="search-input" type="text" placeholder="חיפוש לפי שם מסמך..." oninput="filterHistory()">
-      <button class="btn-sm" onclick="loadHistory()">רענן</button>
-    </div>
-
-    <div class="history-wrap">
-      <table id="history-table">
-        <thead>
-          <tr>
-            <th>שם המסמך</th>
-            <th>תאריך</th>
-            <th>עמודים</th>
-            <th>סטטוס</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody id="history-body">
-          <tr><td colspan="5"><div class="empty-history">טוען...</div></td></tr>
-        </tbody>
-      </table>
-    </div>
-  </div>
-</main>
-
-<script>
-console.log('✓ Script block started');
-
 let currentJobId = null;
 let pollInterval = null;
 let allHistory = [];
 let currentStartTime = null;
 
-// Get elements
 const dropZone = document.getElementById('drop-zone');
 const fileInput = document.getElementById('file-input');
-
-console.log('Elements:', { dropZone, fileInput });
-
-if (!dropZone || !fileInput) {
-  console.error('ERROR: Elements not found!', { dropZone, fileInput });
-} else {
-  console.log('✓ Elements ready - attaching listeners');
 
 dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
 dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
@@ -747,7 +508,7 @@ dropZone.addEventListener('drop', e => {
   const file = e.dataTransfer.files[0];
   if (file) uploadFile(file);
 });
-fileInput.addEventListener('change', () => { 
+fileInput.addEventListener('change', () => {
   if (fileInput.files[0]) {
     const fileSizeMB = fileInput.files[0].size / (1024 * 1024);
     const warning = document.getElementById('file-size-warning');
@@ -761,7 +522,6 @@ fileInput.addEventListener('change', () => {
   }
 });
 dropZone.addEventListener('click', e => { if (e.target.tagName !== 'STRONG') fileInput.click(); });
-}
 
 // --- Upload ---
 async function uploadFile(file) {
@@ -769,7 +529,6 @@ async function uploadFile(file) {
     alert('יש להעלות קובץ PDF בלבד'); return;
   }
 
-  // Show processing UI
   dropZone.style.display = 'none';
   const procBox = document.getElementById('processing-box');
   procBox.style.display = 'block';
@@ -778,7 +537,7 @@ async function uploadFile(file) {
   document.getElementById('result-box').style.display = 'none';
   document.getElementById('features-list').style.display = 'none';
   setProgress(5, 'מעלה קובץ...', '');
-  
+
   currentStartTime = Date.now();
 
   const fd = new FormData();
@@ -788,7 +547,6 @@ async function uploadFile(file) {
     const res = await fetch('/api/upload', { method: 'POST', body: fd });
     const data = await res.json();
     if (data.error) throw new Error(data.error);
-
     currentJobId = data.job_id;
     pollStatus();
   } catch (e) {
@@ -799,9 +557,7 @@ async function uploadFile(file) {
 function setProgress(pct, label, timeMsg) {
   document.getElementById('progress-bar').style.width = pct + '%';
   document.getElementById('progress-label').textContent = label;
-  if (timeMsg) {
-    document.getElementById('progress-time').textContent = timeMsg;
-  }
+  if (timeMsg) document.getElementById('progress-time').textContent = timeMsg;
 }
 
 const LABELS = {
@@ -810,7 +566,7 @@ const LABELS = {
   30: 'בודק עמודים...',
   50: 'מנגיש תוכן...',
   90: 'מוסיף תיוג PDF/UA...',
-  100:'הושלם!'
+  100: 'הושלם!'
 };
 
 function formatTime(seconds) {
@@ -831,11 +587,8 @@ function pollStatus() {
 
       const pct = data.progress || 5;
       const label = LABELS[pct] || `${pct}%`;
-      
-      // Calculate elapsed time
       const elapsed = (Date.now() - currentStartTime) / 1000;
       const timeMsg = `⏱ זמן עבודה: ${formatTime(elapsed)}`;
-      
       setProgress(pct, label, timeMsg);
 
       if (data.status === 'done') {
@@ -852,18 +605,15 @@ function pollStatus() {
 
 async function showSuccess() {
   document.getElementById('processing-box').style.display = 'none';
-  
-  // Show features
   document.getElementById('features-list').style.display = 'block';
-  
+
   const box = document.getElementById('result-box');
   box.className = 'result-box success';
   box.style.display = 'flex';
   document.getElementById('result-icon').textContent = '✅';
   document.getElementById('result-title').textContent = 'המסמך הונגש בהצלחה';
   document.getElementById('result-sub').textContent = 'הקובץ עומד בתקן PDF/UA וIS 5568';
-  
-  // Fetch and display accessibility score
+
   try {
     const res = await fetch(`/api/validate/${currentJobId}`);
     const validation = await res.json();
@@ -874,7 +624,6 @@ async function showSuccess() {
       document.getElementById('score-text').textContent = `${score}%`;
       const scoreFill = document.getElementById('score-fill');
       scoreFill.style.width = score + '%';
-      // Update color based on score
       if (score >= 80) {
         scoreFill.style.background = 'linear-gradient(90deg, var(--green), #84CC16)';
         document.getElementById('score-text').style.color = 'var(--green)';
@@ -886,15 +635,12 @@ async function showSuccess() {
         document.getElementById('score-text').style.color = '#F43F5E';
       }
     }
-  } catch(e) {
-    console.error('Failed to fetch validation score:', e);
-  }
-  
+  } catch(e) {}
+
   const btn = document.getElementById('btn-download');
   btn.style.display = 'block';
   btn.onclick = () => window.location = `/api/download/${currentJobId}`;
 
-  // Reset for next upload
   setTimeout(() => {
     dropZone.style.display = 'block';
     box.style.display = 'none';
@@ -954,8 +700,7 @@ function renderHistory(docs) {
     const name = d.original_name.replace(/\.pdf$/i, '');
     const pages = d.pages ? `${d.pages} עמ'` : '—';
     const time = d.processing_time_seconds ? formatTime(d.processing_time_seconds) : '—';
-    
-    // Format accessibility score
+
     let scoreHtml = '—';
     if (d.accessibility_score !== null && d.accessibility_score !== undefined) {
       const score = Math.round(d.accessibility_score);
@@ -965,7 +710,6 @@ function renderHistory(docs) {
       scoreHtml = `<span style="font-weight: 600; color: ${scoreColor};">${score}%</span>`;
     }
 
-    // Format date from ISO format
     let dateStr = '—';
     if (d.created_at) {
       const date = new Date(d.created_at);
@@ -1000,14 +744,11 @@ async function updateStats() {
   try {
     const res = await fetch('/api/stats');
     const stats = await res.json();
-    
     document.getElementById('stat-total').textContent = stats.total_documents;
     document.getElementById('stat-pages').textContent = stats.total_pages.toLocaleString('he-IL');
     document.getElementById('stat-success-rate').textContent = stats.success_rate + '%';
     document.getElementById('stat-today').textContent = stats.documents_today;
-  } catch(e) {
-    console.error('Failed to update stats:', e);
-  }
+  } catch(e) {}
 }
 
 // Init
