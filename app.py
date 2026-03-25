@@ -182,9 +182,11 @@ def process_pdf(job_id, input_path, output_path, original_name, file_size):
         # Extract title from filename
         title = Path(original_name).stem.replace('-', ' ').replace('_', ' ')
 
-        # Determine DPI based on file size (optimize for large files)
-        # Files over 50MB use lower DPI for faster processing
-        dpi = '150' if file_size > 50 * 1024 * 1024 else '200'
+        # Use 120 DPI to stay within Railway's 512 MB RAM limit.
+        # At 200 DPI a scanned A4 page is ~12 MB uncompressed; a 30-page
+        # document would exceed available memory.  120 DPI keeps quality
+        # acceptable while using ~3x less memory per page.
+        dpi = '120'
         logger.info(f"Using DPI: {dpi} for job {job_id}")
 
         # Run accessibility script

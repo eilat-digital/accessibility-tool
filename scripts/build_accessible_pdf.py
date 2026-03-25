@@ -50,11 +50,11 @@ def find_embedded_font():
 def extract_pages(input_pdf, pages_dir, dpi=200):
     from pdf2image import convert_from_path
     print(f"מחלץ עמודים ({dpi} DPI)...")
-    images = convert_from_path(input_pdf, dpi=dpi)
+    images = convert_from_path(input_pdf, dpi=dpi, thread_count=1, fmt="jpeg")
     paths = []
     for i, img in enumerate(images, 1):
-        p = os.path.join(pages_dir, f"page_{i:02d}.png")
-        img.save(p, "PNG")
+        p = os.path.join(pages_dir, f"page_{i:02d}.jpg")
+        img.save(p, "JPEG", quality=85)
         paths.append(p)
     print(f"{len(paths)} עמודים")
     return paths
