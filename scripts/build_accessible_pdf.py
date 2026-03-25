@@ -397,6 +397,52 @@ def fix_standard_font_encoding(pdf):
         print(f"   ToUnicode הוזרק ל-{len(fixed)} פונטים")
 
 
+def add_metadata_only(input_pdf, output_pdf, lang="he-IL", title="מסמך נגיש"):
+    """For digital PDFs: only add PDF/UA metadata — never touch StructTreeRoot or content streams."""
+    import pikepdf
+    from pikepdf import Dictionary, Name, String
+
+    pdf = pikepdf.open(input_pdf)
+
+    fix_standard_font_encoding(pdf)
+
+    pdf.Root["/Lang"] = String(lang)
+    pdf.Root["/ViewerPreferences"] = pdf.make_indirect(Dictionary(
+        Direction=Name("/R2L"),
+        DisplayDocTitle=pikepdf.objects.Boolean(True),
+    ))
+
+    with pdf.open_metadata() as meta:
+        meta["dc:title"] = title
+        meta["dc:language"] = lang
+        try:
+            meta["pdfuaid:part"] = "1"
+        except Exception:
+            pass
+        try:
+            meta["pdfuaid:amd"] = "2012"
+        except Exception:
+            pass
+
+    try:
+        if "/Info" not in pdf.trailer:
+            pdf.trailer["/Info"] = pdf.make_indirect(Dictionary())
+        pdf.trailer["/Info"]["/Title"] = String(title)
+    except Exception:
+        pass
+
+    if "/MarkInfo" not in pdf.Root:
+        pdf.Root["/MarkInfo"] = pdf.make_indirect(
+            Dictionary(Marked=pikepdf.objects.Boolean(True))
+        )
+
+    for page in pdf.pages:
+        page.obj["/Tabs"] = Name("/S")
+
+    pdf.save(output_pdf)
+    print(f"✅ PDF נגיש (metadata): {output_pdf}")
+
+
 def add_pdfua_tags(input_pdf, output_pdf, lang="he-IL", title="\u05de\u05e1\u05de\u05da \u05e0\u05d2\u05d9\u05e9",
                    page_texts=None, page_titles=None, tables_info=None, pdf_type="scanned",
                    ai_descriptions=None):
@@ -620,13 +666,19 @@ def main():
             page_paths = extract_pages(args.input, pages_dir, dpi=args.dpi)
             build_image_pdf(page_paths, page_texts, base_pdf, stamp=args.stamp)
 
-        add_pdfua_tags(base_pdf, args.output,
-                       lang=args.lang, title=args.title,
-                       page_texts=page_texts,
-                       page_titles=page_titles,
-                       tables_info=tables_info,
-                       pdf_type=pdf_type,
-                       ai_descriptions=ai_descriptions)
+        if pdf_type == 'digital':
+            # Digital PDFs already have a StructTreeRoot with MCIDs in content streams.
+            # Replacing it breaks the MCID→struct mapping → 2984+ Content failures in PAC.
+            # Only add PDF/UA metadata (XMP, Lang, ViewerPreferences) — leave structure intact.
+            add_metadata_only(base_pdf, args.output, lang=args.lang, title=args.title)
+        else:
+            add_pdfua_tags(base_pdf, args.output,
+                           lang=args.lang, title=args.title,
+                           page_texts=page_texts,
+                           page_titles=page_titles,
+                           tables_info=tables_info,
+                           pdf_type=pdf_type,
+                           ai_descriptions=ai_descriptions)
 
         if args.stamp:
             apply_stamp_to_pdf(args.output)
