@@ -568,7 +568,7 @@
           </tr>
         </thead>
         <tbody id="history-body">
-          <tr><td colspan="7"><div class="empty-history">טוען...</div></td></tr>
+          <tr><td colspan="6"><div class="empty-history">טוען...</div></td></tr>
         </tbody>
       </table>
     </div>
@@ -662,6 +662,100 @@
 </style>
 </head>
 <body>
+
+<header>
+  <div class="logo-mark">נג</div>
+  <h1>מערכת הנגשת מסמכים</h1>
+  <span>עיריית אילת — מחלקה דיגיטלית</span>
+</header>
+
+<main>
+  <!-- Stats -->
+  <div class="stats-bar" id="stats-bar">
+    <div class="stat-card">
+      <div class="stat-label">סה"כ מסמכים</div>
+      <div class="stat-value" id="stat-total">—</div>
+      <div class="stat-sub">מאז ההתחלה</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">עמודים הונגשו</div>
+      <div class="stat-value" id="stat-pages">—</div>
+      <div class="stat-sub">עמודי PDF</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">היום</div>
+      <div class="stat-value" id="stat-today">—</div>
+      <div class="stat-sub">מסמכים</div>
+    </div>
+  </div>
+
+  <!-- Upload -->
+  <div class="card">
+    <div class="card-header">
+      <div class="card-icon icon-blue">📄</div>
+      <h2>העלאת מסמך להנגשה</h2>
+    </div>
+
+    <div class="drop-zone" id="drop-zone">
+      <div class="drop-icon">📂</div>
+      <p><strong onclick="document.getElementById('file-input').click()">לחצי לבחירת קובץ</strong> או גרור לכאן</p>
+      <small>PDF בלבד · עד 50MB</small>
+      <input type="file" id="file-input" accept=".pdf">
+    </div>
+
+    <div class="processing-box" id="processing-box">
+      <div class="file-row">
+        <span class="file-icon">📄</span>
+        <span class="file-name" id="proc-filename">—</span>
+        <span class="file-status" id="proc-status">מעבד...</span>
+      </div>
+      <div class="progress-wrap">
+        <div class="progress-bar" id="progress-bar"></div>
+      </div>
+      <div class="progress-label" id="progress-label">מתחיל עיבוד...</div>
+    </div>
+
+    <div class="result-box" id="result-box">
+      <span class="result-icon" id="result-icon"></span>
+      <div class="result-text">
+        <p id="result-title"></p>
+        <small id="result-sub"></small>
+      </div>
+      <button class="btn-download" id="btn-download" style="display:none">⬇ הורדה</button>
+    </div>
+  </div>
+
+  <!-- History -->
+  <div class="card">
+    <div class="card-header">
+      <div class="card-icon icon-gray">🕓</div>
+      <h2>היסטוריית מסמכים</h2>
+    </div>
+
+    <div class="table-toolbar">
+      <input class="search-input" id="search-input" type="text" placeholder="חיפוש לפי שם מסמך..." oninput="filterHistory()">
+      <button class="btn-sm" onclick="loadHistory()">רענן</button>
+    </div>
+
+    <div class="history-wrap">
+      <table id="history-table">
+        <thead>
+          <tr>
+            <th>שם המסמך</th>
+            <th>תאריך</th>
+            <th>עמודים</th>
+            <th>סטטוס</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="history-body">
+          <tr><td colspan="5"><div class="empty-history">טוען...</div></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</main>
+
 <script>
 let currentJobId = null;
 let pollInterval = null;
