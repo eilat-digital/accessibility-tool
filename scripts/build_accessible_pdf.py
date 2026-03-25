@@ -489,15 +489,19 @@ def add_pdfua_tags(input_pdf, output_pdf, lang="he-IL", title="\u05de\u05e1\u05d
         sect_elems.append(sect)
         children = []
 
-        # Single P element per page, linked to content via MCID.
-        # H1 without an MCID is a "floating" struct element → PAC 1.3 failure.
         body_text = page_text.strip() if page_text else f"תוכן עמוד {pg_idx}"
-        p = make_elem("P", sect,
-                      actual_text=body_text,
-                      alt_text=body_text,
-                      page_obj=page_obj, mcid=P_MCID)
+        if pdf_type == 'digital':
+            # For digital PDFs: do NOT add MCID — the original content stream
+            # may already contain BDC markers with MCID 0, causing "MCID already
+            # present" errors in PAC. Use ActualText/Alt only (no content ref).
+            p = make_elem("P", sect, actual_text=body_text, alt_text=body_text)
+        else:
+            p = make_elem("P", sect,
+                          actual_text=body_text,
+                          alt_text=body_text,
+                          page_obj=page_obj, mcid=P_MCID)
+            parent_tree_map[pg_idx_0] = [p]
         children.append(p)
-        parent_tree_map[pg_idx_0] = [p]
 
         for tbl_def in tables_info.get(str(pg_idx), tables_info.get(pg_idx, [])):
             summary = tbl_def.get("summary") or f"\u05d8\u05d1\u05dc\u05d4 \u05d1\u05e2\u05de\u05d5\u05d3 {pg_idx}"
@@ -531,6 +535,8 @@ def add_pdfua_tags(input_pdf, output_pdf, lang="he-IL", title="\u05de\u05e1\u05d
     pdf.Root["/StructTreeRoot"] = str_root
 
     for pg_idx, page in enumerate(pages):
+        if pdf_type == 'digital':
+            continue  # Never touch digital PDF content streams — avoids MCID conflicts
         m_p, pw, ph = page_patch_info[pg_idx]
         try:
             raw_obj = page.obj.get("/Contents")
@@ -540,14 +546,7 @@ def add_pdfua_tags(input_pdf, output_pdf, lang="he-IL", title="\u05de\u05e1\u05d
                 if isinstance(obj, pikepdf.Array): return b"".join(get_bytes(x) for x in obj)
                 return b""
             orig = get_bytes(raw_obj)
-            if pdf_type == 'digital':
-                # Digital PDFs have complex content streams (multiple BT blocks,
-                # tables, graphics). Wrapping the whole stream as one P MCID is
-                # simpler and safer than trying to split image vs text content.
-                new_data = (b"/P <</MCID " + str(m_p).encode() + b">> BDC\n" +
-                            orig.strip(b" \n") + b"\nEMC\n")
-            else:
-                new_data = patch_stream(orig, m_p, pw, ph)
+            new_data = patch_stream(orig, m_p, pw, ph)
             page.obj["/Contents"] = pdf.make_indirect(Stream(pdf, new_data))
         except Exception as e:
             print(f"   content stream עמוד {pg_idx + 1}: {e}")
