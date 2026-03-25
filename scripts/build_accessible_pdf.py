@@ -111,12 +111,13 @@ def run_ocr(page_paths, lang_code="he-IL"):
 
 def _make_stamp_stream(pw, ph):
     """Pure PDF graphics content stream for corner accessibility badge.
-    No font resources required — uses only basic path operators."""
+    Wrapped in Artifact BDC/EMC so PAC does not flag it as untagged content."""
     mm = 2.8346  # 1 mm in points
     R  = 10.0 * mm
     M  =  5.0 * mm
     cx = pw - M - R   # center X — bottom-right corner
     cy = M + R        # center Y
+    bbox = f"[{cx-R:.3f} {cy-R:.3f} {cx+R:.3f} {cy+R:.3f}]"
 
     def circ(x, y, r):
         k = r * 0.5523
@@ -129,6 +130,7 @@ def _make_stamp_stream(pw, ph):
         )
 
     ops = "\n".join([
+        f"/Artifact <</Type /Layout /Attached [/Bottom /Right] /BBox {bbox}>> BDC",
         "q",
         "0.102 0.306 0.541 rg",          # municipality blue — outer ring
         circ(cx, cy, R), "f",
@@ -145,6 +147,7 @@ def _make_stamp_stream(pw, ph):
         "0.878 0.361 0.125 rg",            # Eilat orange accent dot
         circ(cx + R*0.60, cy + R*0.60, R * 0.22), "f",
         "Q",
+        "EMC",
     ])
     return ops.encode()
 
@@ -346,7 +349,7 @@ def fix_standard_font_encoding(pdf):
 
 
 def add_pdfua_tags(input_pdf, output_pdf, lang="he-IL", title="\u05de\u05e1\u05de\u05da \u05e0\u05d2\u05d9\u05e9",
-                   page_texts=None, page_titles=None, tables_info=None):
+                   page_texts=None, page_titles=None, tables_info=None, pdf_type="scanned"):
     import pikepdf
     from pikepdf import Dictionary, Array, Name, String, Stream
 
@@ -483,7 +486,14 @@ def add_pdfua_tags(input_pdf, output_pdf, lang="he-IL", title="\u05de\u05e1\u05d
                 if isinstance(obj, pikepdf.Array): return b"".join(get_bytes(x) for x in obj)
                 return b""
             orig = get_bytes(raw_obj)
-            new_data = patch_stream(orig, m_p, pw, ph)
+            if pdf_type == 'digital':
+                # Digital PDFs have complex content streams (multiple BT blocks,
+                # tables, graphics). Wrapping the whole stream as one P MCID is
+                # simpler and safer than trying to split image vs text content.
+                new_data = (b"/P <</MCID " + str(m_p).encode() + b">> BDC\n" +
+                            orig.strip(b" \n") + b"\nEMC\n")
+            else:
+                new_data = patch_stream(orig, m_p, pw, ph)
             page.obj["/Contents"] = pdf.make_indirect(Stream(pdf, new_data))
         except Exception as e:
             print(f"   content stream עמוד {pg_idx + 1}: {e}")
@@ -554,7 +564,8 @@ def main():
                        lang=args.lang, title=args.title,
                        page_texts=page_texts,
                        page_titles=page_titles,
-                       tables_info=tables_info)
+                       tables_info=tables_info,
+                       pdf_type=pdf_type)
 
         if args.stamp:
             apply_stamp_to_pdf(args.output)
