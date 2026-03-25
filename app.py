@@ -1,4 +1,5 @@
 import os
+import sys
 import json
 import uuid
 import sqlite3
@@ -8,6 +9,8 @@ import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 from flask import Flask, request, jsonify, send_file, render_template
+
+PYTHON = sys.executable
 
 # -- Logging Setup --
 LOG_DIR = Path(__file__).parent / "logs"
@@ -167,7 +170,7 @@ def process_pdf(job_id, input_path, output_path, original_name, file_size):
         # Count pages first
         logger.info(f"Analyzing PDF pages for job {job_id}")
         result = subprocess.run(
-            ['python3', '-c',
+            [PYTHON, '-c',
              f"import pikepdf; pdf=pikepdf.open('{input_path}'); print(len(pdf.pages))"],
             capture_output=True, text=True, timeout=60
         )
@@ -187,7 +190,7 @@ def process_pdf(job_id, input_path, output_path, original_name, file_size):
         # Run accessibility script
         logger.info(f"Running accessibility script for job {job_id}")
         cmd = [
-            'python3', str(SCRIPT_PATH),
+            PYTHON, str(SCRIPT_PATH),
             '--input', str(input_path),
             '--output', str(output_path),
             '--lang', 'he-IL',
