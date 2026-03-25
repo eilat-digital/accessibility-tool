@@ -721,6 +721,7 @@
 </main>
 
 <script>
+console.log('Script initialized');
 let currentJobId = null;
 let pollInterval = null;
 let allHistory = [];
@@ -730,7 +731,14 @@ let currentStartTime = null;
 const dropZone = document.getElementById('drop-zone');
 const fileInput = document.getElementById('file-input');
 
-dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+console.log('dropZone:', dropZone);
+console.log('fileInput:', fileInput);
+
+if (!dropZone || !fileInput) {
+  console.error('ERROR: dropZone or fileInput not found!');
+} else {
+  console.log('Elements found - attaching listeners');
+  dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
 dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
 dropZone.addEventListener('drop', e => {
   e.preventDefault();
@@ -752,6 +760,7 @@ fileInput.addEventListener('change', () => {
   }
 });
 dropZone.addEventListener('click', e => { if (e.target.tagName !== 'STRONG') fileInput.click(); });
+}
 
 // --- Upload ---
 async function uploadFile(file) {
