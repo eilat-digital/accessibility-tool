@@ -99,6 +99,75 @@ def run_ocr(page_paths, lang_code="he-IL"):
     return texts
 
 
+def _make_stamp_stream(pw, ph):
+    """Pure PDF graphics content stream for corner accessibility badge.
+    No font resources required — uses only basic path operators."""
+    mm = 2.8346  # 1 mm in points
+    R  = 10.0 * mm
+    M  =  5.0 * mm
+    cx = pw - M - R   # center X — bottom-right corner
+    cy = M + R        # center Y
+
+    def circ(x, y, r):
+        k = r * 0.5523
+        return (
+            f"{x:.3f} {y+r:.3f} m "
+            f"{x+k:.3f} {y+r:.3f} {x+r:.3f} {y+k:.3f} {x+r:.3f} {y:.3f} c "
+            f"{x+r:.3f} {y-k:.3f} {x+k:.3f} {y-r:.3f} {x:.3f} {y-r:.3f} c "
+            f"{x-k:.3f} {y-r:.3f} {x-r:.3f} {y-k:.3f} {x-r:.3f} {y:.3f} c "
+            f"{x-r:.3f} {y+k:.3f} {x-k:.3f} {y+r:.3f} {x:.3f} {y+r:.3f} c h"
+        )
+
+    ops = "\n".join([
+        "q",
+        "0.102 0.306 0.541 rg",          # municipality blue — outer ring
+        circ(cx, cy, R), "f",
+        "1 1 1 rg",                        # white separator
+        circ(cx, cy, R * 0.84), "f",
+        "0.110 0.486 0.290 rg",            # accessibility green — inner fill
+        circ(cx, cy, R * 0.72), "f",
+        "1 1 1 RG",                        # white checkmark stroke
+        f"{R * 0.14:.3f} w", "1 J 1 j",
+        (f"{cx - R*0.28:.3f} {cy + R*0.06:.3f} m "
+         f"{cx - R*0.04:.3f} {cy - R*0.30:.3f} l "
+         f"{cx + R*0.40:.3f} {cy + R*0.34:.3f} l"),
+        "S",
+        "0.878 0.361 0.125 rg",            # Eilat orange accent dot
+        circ(cx + R*0.60, cy + R*0.60, R * 0.22), "f",
+        "Q",
+    ])
+    return ops.encode()
+
+
+def apply_stamp_to_pdf(pdf_path):
+    """Overlay accessibility badge on every page of any PDF. In-place."""
+    import pikepdf, shutil, os
+    from pikepdf import Stream as PdfStream, Array as PdfArray
+
+    tmp = pdf_path + ".stamp_tmp"
+    try:
+        with pikepdf.open(pdf_path) as pdf:
+            for page in pdf.pages:
+                mb = page.obj.get("/MediaBox")
+                pw = float(mb[2]) if mb else 595.0
+                ph = float(mb[3]) if mb else 842.0
+                s = pdf.make_indirect(PdfStream(pdf, _make_stamp_stream(pw, ph)))
+                existing = page.obj.get("/Contents")
+                if existing is None:
+                    page.obj["/Contents"] = s
+                elif isinstance(existing, pikepdf.Array):
+                    existing.append(s)
+                else:
+                    page.obj["/Contents"] = PdfArray([existing, s])
+            pdf.save(tmp)
+        shutil.move(tmp, pdf_path)
+        print("   חותמת נגישות הוספה")
+    except Exception as e:
+        print(f"   stamp warning: {e}")
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
 def detect_pdf_type(input_path):
     try:
         import pikepdf
@@ -126,12 +195,10 @@ def detect_pdf_type(input_path):
 
 def build_image_pdf(page_paths, page_texts, output_path, stamp=False):
     from reportlab.pdfgen import canvas
-    from reportlab.lib.colors import Color
     from PIL import Image as PILImage
 
     print(f"בונה PDF ({len(page_paths)} עמודים)...")
     font_name = find_embedded_font() or "Helvetica"
-    stamp_color = Color(0.878, 0.361, 0.125, alpha=0.72)
 
     c = canvas.Canvas(output_path)
     for i, img_path in enumerate(page_paths, 1):
@@ -152,32 +219,6 @@ def build_image_pdf(page_paths, page_texts, output_path, stamp=False):
                 for line in text_content.split("\n")[:80]:
                     txt.textLine(line[:200])
                 c.drawText(txt)
-            except Exception:
-                pass
-
-        if stamp:
-            try:
-                from reportlab.lib.units import mm
-                R = 7 * mm
-                MARGIN = 4 * mm
-                cx = pw - MARGIN - R
-                cy = ph - MARGIN - R
-                c.saveState()
-                c.setStrokeColor(stamp_color)
-                c.setLineWidth(1.2)
-                c.circle(cx, cy, R, stroke=1, fill=0)
-                c.setLineCap(1)
-                c.setLineJoin(1)
-                c.setLineWidth(1.6)
-                p2 = c.beginPath()
-                p2.moveTo(cx - R*0.40, cy + R*0.08)
-                p2.lineTo(cx - R*0.08, cy - R*0.35)
-                p2.lineTo(cx + R*0.44, cy + R*0.40)
-                c.drawPath(p2, stroke=1, fill=0)
-                c.setFillColor(stamp_color)
-                c.setFont(font_name, 5)
-                c.drawCentredString(cx, cy - R*0.80, '\u05e0\u05d2\u05d9\u05e9')
-                c.restoreState()
             except Exception:
                 pass
 
@@ -512,6 +553,9 @@ def main():
                        page_texts=page_texts,
                        page_titles=page_titles,
                        tables_info=tables_info)
+
+        if args.stamp:
+            apply_stamp_to_pdf(args.output)
 
 
 if __name__ == "__main__":
