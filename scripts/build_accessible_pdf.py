@@ -388,9 +388,13 @@ def add_pdfua_tags(input_pdf, output_pdf, lang="he-IL", title="\u05de\u05e1\u05d
         h1 = make_elem("H1", sect, actual_text=page_title, alt_text=page_title)
         children.append(h1)
 
-        body = "\n".join(page_text.split("\n")[1:]).strip() if "\n" in page_text else ""
+        # Split OCR text into paragraphs for better IS 5568 / WCAG 1.3.1 structure
+        lines = page_text.split("\n") if page_text else []
+        body_lines = [l for l in lines[1:] if l.strip()] if len(lines) > 1 else []
+        body_text = "\n".join(body_lines) if body_lines else f"תוכן עמוד {pg_idx}"
         p = make_elem("P", sect,
-                      actual_text=body or f"\u05ea\u05d5\u05db\u05df \u05e2\u05de\u05d5\u05d3 {pg_idx}",
+                      actual_text=body_text,
+                      alt_text=body_text,
                       page_obj=page_obj, mcid=P_MCID)
         children.append(p)
         parent_tree_map[pg_idx_0] = [p]

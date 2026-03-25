@@ -198,7 +198,8 @@ def process_pdf(job_id, input_path, output_path, original_name, file_size):
             '--lang', 'he-IL',
             '--title', title,
             '--dpi', dpi,
-            '--stamp'
+            '--stamp',
+            '--ocr',   # IS 5568: scanned PDFs must have a text layer for screen readers
         ]
         jobs[job_id]['progress'] = 50
 
