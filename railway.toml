@@ -1,0 +1,2 @@
+[build]
+buildCommand = "apt-get install -y tesseract-ocr tesseract-ocr-heb tesseract-ocr-ara && pip install -r requirements.txt"

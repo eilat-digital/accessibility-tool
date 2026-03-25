@@ -85,17 +85,27 @@ def run_ocr(page_paths, lang_code="he-IL"):
     try:
         import pytesseract
         from PIL import Image
+        pytesseract.get_tesseract_version()  # verify binary exists
     except ImportError:
+        print("  OCR: pytesseract לא מותקן — ללא שכבת טקסט (WCAG 1.4.5 יכשל)")
         return {}
-    lang_map = {"he-IL": "heb", "he": "heb", "ar": "ara", "en-US": "eng", "en": "eng"}
-    tess = lang_map.get(lang_code, lang_code.split("-")[0])
+    except Exception:
+        print("  OCR: Tesseract לא נמצא — ללא שכבת טקסט (WCAG 1.4.5 יכשל)")
+        return {}
+
+    lang_map = {"he-IL": "heb+eng", "he": "heb+eng", "ar": "ara+heb", "en-US": "eng", "en": "eng"}
+    tess = lang_map.get(lang_code, "heb+eng")
     texts = {}
+    print(f"  OCR: מריץ Tesseract ({tess}) על {len(page_paths)} עמודים...")
     for i, path in enumerate(page_paths, 1):
         try:
             img = Image.open(path)
             texts[i] = pytesseract.image_to_string(img, lang=tess, config="--psm 6").strip()
         except Exception as e:
+            print(f"  OCR עמוד {i}: {e}")
             texts[i] = ""
+    extracted = sum(1 for t in texts.values() if t)
+    print(f"  OCR: חולץ טקסט מ-{extracted}/{len(page_paths)} עמודים")
     return texts
 
 
