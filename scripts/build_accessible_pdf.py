@@ -608,7 +608,6 @@ def main():
             shutil.copy2(args.input, base_pdf)
             print("  PDF ממחשב: שומר טקסט מקורי (WCAG 1.4.5)")
             # WCAG 1.1.1: describe page visuals with AI when API key is available
-            import os
             if os.environ.get("ANTHROPIC_API_KEY"):
                 ai_pages_dir = os.path.join(tmpdir, "ai_pages")
                 os.makedirs(ai_pages_dir)
