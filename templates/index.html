@@ -721,24 +721,25 @@
 </main>
 
 <script>
-console.log('Script initialized');
+console.log('✓ Script block started');
+
 let currentJobId = null;
 let pollInterval = null;
 let allHistory = [];
 let currentStartTime = null;
 
-// --- Drop zone ---
+// Get elements
 const dropZone = document.getElementById('drop-zone');
 const fileInput = document.getElementById('file-input');
 
-console.log('dropZone:', dropZone);
-console.log('fileInput:', fileInput);
+console.log('Elements:', { dropZone, fileInput });
 
 if (!dropZone || !fileInput) {
-  console.error('ERROR: dropZone or fileInput not found!');
+  console.error('ERROR: Elements not found!', { dropZone, fileInput });
 } else {
-  console.log('Elements found - attaching listeners');
-  dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+  console.log('✓ Elements ready - attaching listeners');
+
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
 dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
 dropZone.addEventListener('drop', e => {
   e.preventDefault();
