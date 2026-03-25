@@ -208,8 +208,8 @@ def process_pdf(job_id, input_path, output_path, original_name, file_size):
         jobs[job_id]['progress'] = 90
 
         if proc.returncode != 0:
-            error_msg = proc.stderr or "שגיאה בעיבוד הקובץ"
-            logger.error(f"Script error for job {job_id}: {error_msg}")
+            error_msg = (proc.stderr or proc.stdout or "שגיאה בעיבוד הקובץ").strip()
+            logger.error(f"Script error for job {job_id}: stdout={proc.stdout!r} stderr={proc.stderr!r}")
             raise Exception(error_msg)
 
         # Calculate processing time
