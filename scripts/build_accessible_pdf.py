@@ -390,14 +390,10 @@ def add_pdfua_tags(input_pdf, output_pdf, lang="he-IL", title="\u05de\u05e1\u05d
         Dictionary(Marked=pikepdf.objects.Boolean(True))
     )
 
-    # RoleMap: map our structure types to standard PDF/UA roles
-    # Required for WCAG 2.2 / PDF/UA validators
-    pdf.Root["/RoleMap"] = pdf.make_indirect(Dictionary(
-        Sect=Name("/Div"),
-        H1=Name("/H"),
-        Figure=Name("/Figure"),
-        P=Name("/P"),
-    ))
+    # RoleMap: only needed for non-standard custom types.
+    # H, H1-H6, Sect, Figure, P, Table, TR, TH, TD are all PDF standard types —
+    # including them in RoleMap confuses PAC and causes 1.3 failures.
+    pdf.Root["/RoleMap"] = pdf.make_indirect(Dictionary())
 
     parent_tree_map = {}
     P_MCID = 0
@@ -436,13 +432,9 @@ def add_pdfua_tags(input_pdf, output_pdf, lang="he-IL", title="\u05de\u05e1\u05d
         sect_elems.append(sect)
         children = []
 
-        h1 = make_elem("H1", sect, actual_text=page_title, alt_text=page_title)
-        children.append(h1)
-
-        # Split OCR text into paragraphs for better IS 5568 / WCAG 1.3.1 structure
-        lines = page_text.split("\n") if page_text else []
-        body_lines = [l for l in lines[1:] if l.strip()] if len(lines) > 1 else []
-        body_text = "\n".join(body_lines) if body_lines else f"תוכן עמוד {pg_idx}"
+        # Single P element per page, linked to content via MCID.
+        # H1 without an MCID is a "floating" struct element → PAC 1.3 failure.
+        body_text = page_text.strip() if page_text else f"תוכן עמוד {pg_idx}"
         p = make_elem("P", sect,
                       actual_text=body_text,
                       alt_text=body_text,
