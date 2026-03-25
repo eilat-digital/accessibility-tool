@@ -47,15 +47,36 @@ def find_embedded_font():
     return None
 
 
-def extract_pages(input_pdf, pages_dir, dpi=200):
-    from pdf2image import convert_from_path
+def extract_pages(input_pdf, pages_dir, dpi=200, batch_size=20):
+    from pdf2image import convert_from_path, pdfinfo_from_path
     print(f"מחלץ עמודים ({dpi} DPI)...")
-    images = convert_from_path(input_pdf, dpi=dpi, thread_count=1, fmt="jpeg")
+    try:
+        total_pages = pdfinfo_from_path(input_pdf)["Pages"]
+    except Exception:
+        total_pages = None
+
     paths = []
-    for i, img in enumerate(images, 1):
-        p = os.path.join(pages_dir, f"page_{i:02d}.jpg")
-        img.save(p, "JPEG", quality=85)
-        paths.append(p)
+    if total_pages:
+        for start in range(1, total_pages + 1, batch_size):
+            end = min(start + batch_size - 1, total_pages)
+            batch = convert_from_path(
+                input_pdf, dpi=dpi,
+                first_page=start, last_page=end,
+                thread_count=1
+            )
+            for i, img in enumerate(batch, start):
+                p = os.path.join(pages_dir, f"page_{i:04d}.jpg")
+                img.save(p, "JPEG", quality=85)
+                paths.append(p)
+            del batch  # free memory before next batch
+    else:
+        # fallback for PDFs where page count can't be determined
+        batch = convert_from_path(input_pdf, dpi=dpi, thread_count=1)
+        for i, img in enumerate(batch, 1):
+            p = os.path.join(pages_dir, f"page_{i:04d}.jpg")
+            img.save(p, "JPEG", quality=85)
+            paths.append(p)
+
     print(f"{len(paths)} עמודים")
     return paths
 
