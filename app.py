@@ -13,8 +13,17 @@ from flask_cors import CORS
 
 PYTHON = sys.executable
 
-# גבול עמודים — מעל 50 עמודים Railway עלולה לצאת מזיכרון (512 MB, 120 DPI)
-MAX_PAGES = 50
+# גבול עמודים — DPI יורד אוטומטית לפי גודל המסמך
+MAX_PAGES = 300
+
+def dpi_for_pages(page_count):
+    """DPI דינמי: פחות עמודים = איכות גבוהה יותר, יותר עמודים = חוסך זיכרון."""
+    if page_count <= 30:
+        return 150   # איכות גבוהה — מסמכים קצרים
+    elif page_count <= 100:
+        return 120   # ברירת מחדל
+    else:
+        return 100   # 100-300 עמודים — מאזן זיכרון/איכות
 
 # -- Logging Setup --
 LOG_DIR = Path(__file__).parent / "logs"
@@ -246,12 +255,9 @@ def process_pdf(job_id, input_path, output_path, original_name, file_size):
         # Extract title from filename
         title = Path(original_name).stem.replace('-', ' ').replace('_', ' ')
 
-        # Use 120 DPI to stay within Railway's 512 MB RAM limit.
-        # At 200 DPI a scanned A4 page is ~12 MB uncompressed; a 30-page
-        # document would exceed available memory.  120 DPI keeps quality
-        # acceptable while using ~3x less memory per page.
-        dpi = '120'
-        logger.info(f"Using DPI: {dpi} for job {job_id}")
+        # DPI דינמי לפי מספר עמודים — שומר על זיכרון Railway (512 MB)
+        dpi = str(dpi_for_pages(pages))
+        logger.info(f"Using DPI: {dpi} for job {job_id} ({pages} pages)")
 
         # Run accessibility script
         logger.info(f"Running accessibility script for job {job_id}")
@@ -268,9 +274,10 @@ def process_pdf(job_id, input_path, output_path, original_name, file_size):
         ]
         jobs[job_id]['progress'] = 50
 
-        # Adjust timeout based on file size: 5 min minimum + 1 sec per MB
-        timeout_seconds = max(300, 300 + (file_size // (1024 * 1024)))
-        logger.info(f"Processing timeout set to {timeout_seconds} seconds")
+        # Timeout דינמי: 5 דקות בסיס + 4 שניות לעמוד (OCR איטי)
+        # מינימום 5 דק', מקסימום 60 דק' (מסמך 300 עמודים ≈ 20 דק')
+        timeout_seconds = max(300, min(3600, 300 + pages * 4))
+        logger.info(f"Processing timeout set to {timeout_seconds}s for {pages} pages")
         
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_seconds)
         jobs[job_id]['progress'] = 90
@@ -620,6 +627,7 @@ def health_check():
         'database': 'connected',
         'limits': {
             'max_pages': MAX_PAGES,
+            'dpi_tiers': {'1-30': 150, '31-100': 120, '101-300': 100},
             'max_file_size_mb': 200
         }
     })
