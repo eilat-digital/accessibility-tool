@@ -99,57 +99,60 @@ def log_operation(job_id, operation, status, message=""):
         logger.error(f"Failed to log operation: {e}")
 
 def validate_pdf_accessibility(pdf_path):
-    """Validate PDF accessibility features and calculate score (0-100)"""
+    """בדיקת נגישות אמיתית של PDF וחישוב ציון (0-100)"""
     try:
         import pikepdf
-        
+
         score_data = {
-            'has_tags': 0,
-            'has_lang': 0,
-            'has_title': 0,
-            'has_author': 0,
-            'accessible_images': 0,
-            'text_content': 0
+            'has_text_content': 0,   # 40 — טקסט קריא (OCR)
+            'has_lang': 0,           # 20 — שפת המסמך מוגדרת
+            'has_title': 0,          # 15 — כותרת מוגדרת
+            'has_author': 0,         # 10 — מחבר מוגדר
+            'has_struct_tree': 0,    # 15 — תיוג מבנה PDF/UA
         }
-        
+
         with pikepdf.open(pdf_path) as pdf:
-            # Check for logical structure (tags)
-            if pdf.pages and len(pdf.pages) > 0:
-                score_data['has_tags'] = 25  # 25% for structure
-            
-            # Check metadata (safe access for pikepdf 8.0+)
-            if hasattr(pdf.Root, 'Metadata'):
+            total_pages = len(pdf.pages)
+
+            # בדיקת תוכן טקסט בעמודים
+            text_pages = 0
+            check_pages = min(5, total_pages)
+            for page in pdf.pages[:check_pages]:
+                if page.get('/Contents'):
+                    text_pages += 1
+            if total_pages > 0:
+                ratio = text_pages / check_pages if check_pages > 0 else 0
+                score_data['has_text_content'] = int(40 * ratio)
+
+            # בדיקת מטאדאטה
+            meta = pdf.docinfo
+            if str(meta.get('/Title', '')).strip():
                 score_data['has_title'] = 15
-                score_data['has_author'] = 5
-                score_data['has_lang'] = 10
-            
-            # Check for text content (not just images)
-            try:
-                for page in pdf.pages[:min(3, len(pdf.pages))]:
-                    if page.get('/Contents'):
-                        score_data['text_content'] = 30
-                        break
-            except:
-                pass
-            
-            # Check for marked images
-            try:
-                score_data['accessible_images'] = 15  # Award if PDF was processed
-            except:
-                pass
-        
+            if str(meta.get('/Author', '')).strip():
+                score_data['has_author'] = 10
+
+            # בדיקת שפה — ב-Root או ב-docinfo
+            root_lang = str(pdf.Root.get('/Lang', ''))
+            meta_lang = str(meta.get('/Lang', ''))
+            if root_lang or meta_lang:
+                score_data['has_lang'] = 20
+
+            # בדיקת תיוג מבנה PDF/UA
+            if '/StructTreeRoot' in pdf.Root:
+                score_data['has_struct_tree'] = 15
+
         total_score = min(100, sum(score_data.values()))
-        
+
         report = {
             'score': total_score,
             'components': score_data,
             'validation_date': datetime.now().isoformat(),
             'status': 'compliant' if total_score >= 70 else 'needs_review'
         }
-        
+
         logger.info(f"PDF validated: score={report['score']}, status={report['status']}")
         return report
-        
+
     except Exception as e:
         logger.error(f"Error validating PDF: {e}")
         return {
