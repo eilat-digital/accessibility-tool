@@ -6,7 +6,15 @@ import sqlite3
 import subprocess
 import threading
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+
+# Israel Standard Time: UTC+2 winter, UTC+3 summer (IST/IDT)
+# Using fixed UTC+2 as a safe baseline; Railway server runs UTC.
+IL_TZ = timezone(timedelta(hours=3))  # IDT (summer) — change to 2 in winter
+
+def now_il():
+    """Current datetime in Israel time."""
+    return datetime.now(IL_TZ).replace(tzinfo=None)
 from pathlib import Path
 from flask import Flask, request, jsonify, send_file, render_template
 from flask_cors import CORS
@@ -106,7 +114,7 @@ def log_operation(job_id, operation, status, message=""):
         with get_db() as conn:
             conn.execute(
                 "INSERT INTO operation_logs (job_id, operation, status, message, timestamp) VALUES (?,?,?,?,?)",
-                (job_id, operation, status, message, datetime.now().isoformat())
+                (job_id, operation, status, message, now_il().isoformat())
             )
             conn.commit()
     except Exception as e:
@@ -244,7 +252,7 @@ def validate_pdf_accessibility(pdf_path):
         report = {
             'score': total_score,
             'components': score_data,
-            'validation_date': datetime.now().isoformat(),
+            'validation_date': now_il().isoformat(),
             'standard': 'IS 5568 / PDF/UA-1 / WCAG 2.2',
             'status': compliance_status
         }
@@ -262,7 +270,7 @@ def validate_pdf_accessibility(pdf_path):
 
 def process_pdf(job_id, input_path, output_path, original_name, file_size):
     """Process PDF and make it accessible"""
-    start_time = datetime.now()
+    start_time = now_il()
     
     try:
         logger.info(f"Starting processing for job {job_id}: {original_name} (size: {file_size} bytes)")
@@ -317,7 +325,7 @@ def process_pdf(job_id, input_path, output_path, original_name, file_size):
             raise Exception(error_msg)
 
         # Calculate processing time
-        processing_time = (datetime.now() - start_time).total_seconds()
+        processing_time = (now_il() - start_time).total_seconds()
         
         # Define accessibility features applied
         accessibility_features = [
@@ -347,7 +355,7 @@ def process_pdf(job_id, input_path, output_path, original_name, file_size):
                    updated_at=?
                    WHERE id=?""",
                 (pages, str(output_path), processing_time, json.dumps(accessibility_features), 
-                 validation_report['score'], json.dumps(validation_report), datetime.now().isoformat(), job_id)
+                 validation_report['score'], json.dumps(validation_report), now_il().isoformat(), job_id)
             )
             conn.commit()
 
@@ -360,7 +368,7 @@ def process_pdf(job_id, input_path, output_path, original_name, file_size):
         with get_db() as conn:
             conn.execute(
                 "UPDATE documents SET status='error', error=?, updated_at=? WHERE id=?",
-                (str(e), datetime.now().isoformat(), job_id)
+                (str(e), now_il().isoformat(), job_id)
             )
             conn.commit()
         jobs[job_id] = {'status': 'error', 'error': str(e)}
@@ -453,7 +461,7 @@ def upload():
         conn.execute(
             """INSERT INTO documents (id, original_name, file_size, status, created_at) 
                VALUES (?,?,?,?,?)""",
-            (job_id, file.filename, file_size, 'processing', datetime.now().isoformat())
+            (job_id, file.filename, file_size, 'processing', now_il().isoformat())
         )
         conn.commit()
 
@@ -632,7 +640,7 @@ def get_stats():
             FROM documents
         """).fetchone()
         
-        today = datetime.now().date().isoformat()
+        today = now_il().date().isoformat()
         today_count = conn.execute(
             "SELECT COUNT(*) as count FROM documents WHERE date(created_at) = ?",
             (today,)
@@ -665,7 +673,7 @@ def health_check():
     """
     return jsonify({
         'status': 'ok',
-        'timestamp': datetime.now().isoformat(),
+        'timestamp': now_il().isoformat(),
         'version': '2.0',
         'database': 'connected',
         'limits': {
