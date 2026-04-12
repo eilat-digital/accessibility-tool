@@ -13,6 +13,9 @@ from flask_cors import CORS
 
 PYTHON = sys.executable
 
+# גבול עמודים — מעל 50 עמודים Railway עלולה לצאת מזיכרון (512 MB, 120 DPI)
+MAX_PAGES = 50
+
 # -- Logging Setup --
 LOG_DIR = Path(__file__).parent / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -380,6 +383,20 @@ def upload():
 
     file.save(input_path)
 
+    # בדיקת מספר עמודים לפני עיבוד
+    try:
+        import pikepdf as _pk
+        with _pk.open(input_path) as _pdf:
+            page_count = len(_pdf.pages)
+        if page_count > MAX_PAGES:
+            input_path.unlink(missing_ok=True)
+            msg = f'הקובץ מכיל {page_count} עמודים. המקסימום המותר הוא {MAX_PAGES} עמודים.'
+            logger.warning(f"Upload rejected — too many pages: {page_count} (max {MAX_PAGES})")
+            return jsonify({'error': msg}), 400
+        logger.info(f"Page count OK: {page_count}/{MAX_PAGES}")
+    except Exception as e:
+        logger.warning(f"Could not count pages: {e}")
+
     logger.info(f"File uploaded: job_id={job_id}, filename={file.filename}, size={file_size} bytes")
 
     with get_db() as conn:
@@ -600,7 +617,11 @@ def health_check():
         'status': 'ok',
         'timestamp': datetime.now().isoformat(),
         'version': '2.0',
-        'database': 'connected'
+        'database': 'connected',
+        'limits': {
+            'max_pages': MAX_PAGES,
+            'max_file_size_mb': 200
+        }
     })
 
 @app.route('/api/docs')
