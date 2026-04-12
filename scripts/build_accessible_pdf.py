@@ -496,33 +496,14 @@ def build_image_pdf(page_paths, page_texts, output_path, stamp=False):
 
 
 def patch_stream(raw, fig_mcid, txt_mcid, page_w, page_h):
-    """Tag image layer as Figure/MCID and OCR text layer as Artifact (WCAG 1.1.1 + PDF/UA).
+    """Wrap the entire page content (image + invisible OCR) in a single Figure MCID.
 
-    The invisible OCR text (renderMode=3) is tagged as Artifact — not as a structure MCID.
-    Semantic content is provided via ActualText on structure elements.
-    This avoids orphaned MCIDs in content streams that cause PAC failures.
+    PDF/UA best practice for scanned documents: the whole page is one Figure.
+    - Figure carries Alt (AI description) and ActualText (OCR text).
+    - No split needed; no orphaned MCIDs; no P elements without content reference.
     """
-    bt_pos = -1
-    for needle in (b"\nBT\n", b"\nBT "):
-        pos = raw.find(needle)
-        if pos >= 0 and (bt_pos < 0 or pos < bt_pos):
-            bt_pos = pos + 1
-    if bt_pos < 0:
-        # No text layer — tag entire content as Figure
-        return (b"/Figure <</MCID " + str(fig_mcid).encode() + b">> BDC\n" +
-                raw + b"\n" + b"EMC\n")
-    last_Q = raw.rfind(b"\nQ\n", 0, bt_pos)
-    search_from = last_Q if last_Q >= 0 else 0
-    unclosed_q = raw.find(b"\nq\n", search_from, bt_pos)
-    split_pos = (unclosed_q + 1) if unclosed_q >= 0 else bt_pos
-    image_part = raw[:split_pos].rstrip(b" \n")
-    text_part = raw[split_pos:]
-    # OCR text is invisible (renderMode=3) → Artifact, not a structure element MCID.
-    # ActualText on structure elements carries the semantic meaning for screen readers.
     return (b"/Figure <</MCID " + str(fig_mcid).encode() + b">> BDC\n" +
-            image_part + b"\n" + b"EMC\n" +
-            b"/Artifact <</Type /Layout /Subtype /Background>> BDC\n" +
-            text_part.strip(b" \n") + b"\n" + b"EMC\n")
+            raw.strip(b" \n") + b"\nEMC\n")
 
 
 def add_bookmarks(pdf, pages, page_titles, page_texts):
@@ -774,24 +755,20 @@ def add_pdfua_tags(input_pdf, output_pdf, lang="he-IL", title="\u05de\u05e1\u05d
                 text_children = [make_elem("P", sect, actual_text=body_text, alt_text=body_text)]
             children.extend(text_children)
         else:
-            # WCAG 1.1.1: tag scan image as Figure with Alt text (MCID 0)
+            # WCAG 1.1.1 + PDF/UA: entire page = one Figure (MCID 0)
+            # Alt  = AI visual description (for screen readers without text extraction)
+            # ActualText = OCR text (for text extraction / copy-paste)
+            # All page content (image + invisible OCR) wrapped in one Figure MCID.
+            # This avoids P elements with no MCID that PAC rejects.
             fig_alt = (ai_desc if ai_desc
                        else (body_text[:300] if body_text else f"תמונת עמוד {pg_idx}"))
             fig = make_elem("Figure", sect,
-                            title_text=f"תמונת עמוד {pg_idx}",
+                            title_text=f"עמוד {pg_idx}",
                             alt_text=fig_alt,
+                            actual_text=body_text if body_text else f"עמוד {pg_idx}",
                             page_obj=page_obj, mcid=FIG_MCID)
-            # ParentTree MCID 0 → Figure only; text elements use ActualText (no MCID)
             parent_tree_map[pg_idx_0] = [fig]
             children.append(fig)
-
-            # WCAG 1.3.1: build rich structure from AI analysis or fallback to P
-            struct_list = page_structures.get(pg_idx, [])
-            if struct_list:
-                text_children = build_page_elements(struct_list, sect, pdf, make_elem)
-            else:
-                text_children = [make_elem("P", sect, actual_text=body_text)]
-            children.extend(text_children)
 
         for tbl_def in tables_info.get(str(pg_idx), tables_info.get(pg_idx, [])):
             summary = tbl_def.get("summary") or f"\u05d8\u05d1\u05dc\u05d4 \u05d1\u05e2\u05de\u05d5\u05d3 {pg_idx}"
