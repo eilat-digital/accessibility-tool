@@ -407,12 +407,15 @@
 
     <div class="drop-zone" id="drop-zone">
       <div class="drop-icon">📂</div>
-      <p><strong onclick="document.getElementById('file-input').click()">לחצי לבחירת קובץ</strong> או גרור לכאן</p>
-      <small>PDF בלבד · עד 200MB</small>
-      <div id="file-size-warning" style="display:none; color: #E05C20; font-size: 12px; margin-top: 8px;">
-        ⚠️ קובץ גדול - עיבוד עשוי להימשך עד 30 דקות
+      <p><strong onclick="document.getElementById('file-input').click()">לחצו לבחירת קובץ</strong> או גררו לכאן</p>
+      <div style="display:flex; gap:6px; flex-wrap:wrap; justify-content:center; margin: 8px 0;">
+        <span style="background:#E8F0FB; color:#1A4E8A; font-size:11px; padding:3px 8px; border-radius:4px; font-weight:600;">PDF</span>
+        <span style="background:#E8F0FB; color:#1A4E8A; font-size:11px; padding:3px 8px; border-radius:4px; font-weight:600;">Word (.docx)</span>
+        <span style="background:#E8F0FB; color:#1A4E8A; font-size:11px; padding:3px 8px; border-radius:4px; font-weight:600;">PowerPoint (.pptx)</span>
       </div>
-      <input type="file" id="file-input" accept=".pdf">
+      <small style="color:var(--gray-3)">עד 300 עמודים · עד 200MB</small>
+      <div id="file-warning" style="display:none; margin-top:10px; padding:8px 12px; border-radius:6px; font-size:12px; text-align:right;"></div>
+      <input type="file" id="file-input" accept=".pdf,.docx,.doc,.pptx,.ppt">
     </div>
 
     <div class="processing-box" id="processing-box">
@@ -509,24 +512,33 @@ dropZone.addEventListener('drop', e => {
   if (file) uploadFile(file);
 });
 fileInput.addEventListener('change', () => {
-  if (fileInput.files[0]) {
-    const fileSizeMB = fileInput.files[0].size / (1024 * 1024);
-    const warning = document.getElementById('file-size-warning');
-    if (fileSizeMB > 50) {
-      warning.style.display = 'block';
-      warning.innerHTML = `⚠️ קובץ גדול (${fileSizeMB.toFixed(1)}MB) - עיבוד עשוי להימשך כמה דקות`;
-    } else {
-      warning.style.display = 'none';
-    }
-    uploadFile(fileInput.files[0]);
-  }
+  if (fileInput.files[0]) uploadFile(fileInput.files[0]);
 });
 dropZone.addEventListener('click', e => { if (e.target.tagName !== 'STRONG') fileInput.click(); });
 
+function timeEstimate(sizeMB) {
+  // הערכת זמן גסה לפי גודל קובץ
+  if (sizeMB < 2)  return '30 שניות עד דקה';
+  if (sizeMB < 10) return '1–3 דקות';
+  if (sizeMB < 50) return '3–8 דקות';
+  return '10–20 דקות';
+}
+
 // --- Upload ---
 async function uploadFile(file) {
-  if (!file.name.toLowerCase().endsWith('.pdf')) {
-    alert('יש להעלות קובץ PDF בלבד'); return;
+  const allowed = ['.pdf', '.docx', '.doc', '.pptx', '.ppt'];
+  const ext = file.name.slice(file.name.lastIndexOf('.')).toLowerCase();
+  if (!allowed.includes(ext)) {
+    showWarning('⚠️ סוג קובץ לא נתמך. ניתן להעלות: PDF, Word, PowerPoint', 'error');
+    return;
+  }
+
+  const sizeMB = file.size / (1024 * 1024);
+  const warn = document.getElementById('file-warning');
+  if (sizeMB > 20) {
+    showWarning(`⏱ קובץ גדול (${sizeMB.toFixed(1)}MB) — זמן עיבוד משוער: ${timeEstimate(sizeMB)}`, 'info');
+  } else {
+    warn.style.display = 'none';
   }
 
   dropZone.style.display = 'none';
@@ -749,6 +761,21 @@ async function updateStats() {
     document.getElementById('stat-success-rate').textContent = stats.success_rate + '%';
     document.getElementById('stat-today').textContent = stats.documents_today;
   } catch(e) {}
+}
+
+function showWarning(msg, type) {
+  const el = document.getElementById('file-warning');
+  el.style.display = 'block';
+  if (type === 'error') {
+    el.style.background = 'var(--red-s)';
+    el.style.color = 'var(--red)';
+    el.style.border = '1px solid #FCA5A5';
+  } else {
+    el.style.background = 'var(--ora-s)';
+    el.style.color = '#92400E';
+    el.style.border = '1px solid #FCD34D';
+  }
+  el.textContent = msg;
 }
 
 // Init

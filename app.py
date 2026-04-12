@@ -112,6 +112,33 @@ def log_operation(job_id, operation, status, message=""):
     except Exception as e:
         logger.error(f"Failed to log operation: {e}")
 
+ALLOWED_EXTENSIONS = {
+    '.pdf':  'PDF',
+    '.docx': 'Word',
+    '.doc':  'Word (ישן)',
+    '.pptx': 'PowerPoint',
+    '.ppt':  'PowerPoint (ישן)',
+}
+
+def convert_to_pdf(input_path: Path, work_dir: Path) -> Path:
+    """המרת Word/PowerPoint ל-PDF באמצעות LibreOffice headless."""
+    import shutil
+    lo = shutil.which('libreoffice') or shutil.which('soffice')
+    if not lo:
+        raise Exception('LibreOffice אינו מותקן — לא ניתן להמיר את הקובץ')
+    result = subprocess.run(
+        [lo, '--headless', '--convert-to', 'pdf', '--outdir', str(work_dir), str(input_path)],
+        capture_output=True, text=True, timeout=180
+    )
+    if result.returncode != 0:
+        raise Exception(f'שגיאה בהמרה: {result.stderr or result.stdout}')
+    pdf_path = work_dir / (input_path.stem + '.pdf')
+    if not pdf_path.exists():
+        raise Exception('ההמרה הסתיימה אך קובץ PDF לא נמצא')
+    logger.info(f"Converted {input_path.suffix} → PDF: {pdf_path}")
+    return pdf_path
+
+
 def validate_pdf_accessibility(pdf_path):
     """בדיקת נגישות אמיתית של PDF לפי IS 5568 / PDF/UA-1 (ציון 0-100)
 
@@ -363,9 +390,11 @@ def upload():
         return jsonify({'error': msg}), 400
 
     file = request.files['file']
-    if not file.filename.lower().endswith('.pdf'):
-        msg = 'יש להעלות קובץ PDF בלבד'
-        logger.warning(f"Upload attempt with non-PDF: {file.filename}")
+    ext = Path(file.filename).suffix.lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        allowed = ', '.join(ALLOWED_EXTENSIONS.keys())
+        msg = f'סוג קובץ לא נתמך. ניתן להעלות: {allowed}'
+        logger.warning(f"Upload attempt with unsupported type: {file.filename}")
         return jsonify({'error': msg}), 400
 
     # Get file size
@@ -389,6 +418,18 @@ def upload():
     output_path = OUTPUT_DIR / f"{job_id}_accessible.pdf"
 
     file.save(input_path)
+
+    # המרה ל-PDF אם נדרש (Word / PowerPoint)
+    if ext != '.pdf':
+        try:
+            logger.info(f"Converting {ext} to PDF for job {job_id}")
+            converted = convert_to_pdf(input_path, UPLOAD_DIR)
+            input_path.unlink(missing_ok=True)
+            input_path = converted
+        except Exception as conv_err:
+            input_path.unlink(missing_ok=True)
+            logger.error(f"Conversion failed for job {job_id}: {conv_err}")
+            return jsonify({'error': str(conv_err)}), 500
 
     # בדיקת מספר עמודים לפני עיבוד
     try:

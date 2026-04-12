@@ -4,5 +4,6 @@ aptPkgs = [
   "tesseract-ocr-heb",
   "tesseract-ocr-ara",
   "tesseract-ocr-eng",
-  "poppler-utils"
+  "poppler-utils",
+  "libreoffice"
 ]
