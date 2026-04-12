@@ -246,6 +246,146 @@ def apply_stamp_to_pdf(pdf_path):
             os.remove(tmp)
 
 
+def analyze_structure_with_ai(page_paths, page_texts, lang_code="he-IL"):
+    """Use Claude Haiku to analyze document structure per page (WCAG 1.3.1).
+    Returns {page_num: [{type, text} | {type:'tr', cells:[{type,text}]}]}.
+    Types: h1 h2 h3 p li caption tr(with cells: th/td)."""
+    import os
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        return {}
+    try:
+        import anthropic, base64, io, json, re
+        from PIL import Image as PILImage
+    except ImportError:
+        return {}
+
+    client = anthropic.Anthropic()
+    structures = {}
+    print(f"  AI: מנתח מבנה {len(page_paths)} עמודים (WCAG 1.3.1)...")
+
+    for i, path in enumerate(page_paths, 1):
+        try:
+            img = PILImage.open(path)
+            img.thumbnail((1024, 1024))
+            buf = io.BytesIO()
+            img.save(buf, "JPEG", quality=80)
+            data = base64.standard_b64encode(buf.getvalue()).decode()
+            ocr_text = page_texts.get(i, "")[:3000]
+
+            resp = client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=1500,
+                messages=[{"role": "user", "content": [
+                    {"type": "image",
+                     "source": {"type": "base64", "media_type": "image/jpeg", "data": data}},
+                    {"type": "text", "text": (
+                        f"Analyze the document structure of this page.\n"
+                        f"OCR text: {ocr_text}\n\n"
+                        "Return ONLY a JSON array with elements in reading order.\n"
+                        "Simple elements: {\"type\":\"h1\"|\"h2\"|\"h3\"|\"p\"|\"li\"|\"caption\", \"text\":\"...\"}\n"
+                        "Table row: {\"type\":\"tr\", \"cells\":[{\"type\":\"th\"|\"td\", \"text\":\"...\"}]}\n"
+                        "Use h1 for main title, h2 for section headings, h3 for sub-headings, "
+                        "p for paragraphs, li for list items.\n"
+                        "Return ONLY the JSON array."
+                    )}
+                ]}]
+            )
+            text = resp.content[0].text.strip()
+            match = re.search(r'\[.*\]', text, re.DOTALL)
+            if match:
+                elements = json.loads(match.group())
+                structures[i] = elements
+                print(f"  AI מבנה עמוד {i}: {len(elements)} אלמנטים ✓")
+        except Exception as e:
+            print(f"  AI מבנה עמוד {i}: {e}")
+
+    return structures
+
+
+def build_page_elements(struct_list, sect, pdf, make_elem):
+    """Convert AI structure list to pikepdf structure elements under sect.
+    Returns list of pikepdf elements (children of sect)."""
+    import pikepdf
+    from pikepdf import Dictionary, Array, Name, String
+
+    children = []
+    list_buf = []   # buffer for consecutive li items → wrap in L
+
+    def flush_list():
+        if not list_buf:
+            return
+        l_elem = make_elem("L", sect)
+        li_elems = []
+        for li_text in list_buf:
+            li = make_elem("LI", l_elem)
+            lbody = make_elem("LBody", li, actual_text=li_text)
+            li["/K"] = Array([lbody])
+            li_elems.append(li)
+        l_elem["/K"] = Array(li_elems)
+        children.append(l_elem)
+        list_buf.clear()
+
+    # Group consecutive tr elements into a single Table
+    def flush_table(tr_buf):
+        if not tr_buf:
+            return
+        tbl = make_elem("Table", sect)
+        tbl["/K"] = Array(tr_buf)
+        for tr in tr_buf:
+            tr["/P"] = tbl
+        children.append(tbl)
+
+    tr_buf = []
+
+    for item in struct_list:
+        t = str(item.get("type", "p")).lower()
+        text = str(item.get("text", "")).strip()
+
+        if t == "li":
+            if tr_buf:
+                flush_table(tr_buf); tr_buf = []
+            list_buf.append(text)
+            continue
+
+        # Flush pending list/table before non-li/non-tr elements
+        if t != "tr" and list_buf:
+            flush_list()
+        if t != "tr" and tr_buf:
+            flush_table(tr_buf); tr_buf = []
+
+        if t in ("h1", "h2", "h3"):
+            flush_list()
+            pdf_type_map = {"h1": "H1", "h2": "H2", "h3": "H3"}
+            children.append(make_elem(pdf_type_map[t], sect, actual_text=text))
+        elif t == "tr":
+            cells = item.get("cells", [])
+            if not cells:
+                continue
+            tr = make_elem("TR", sect)  # parent will be fixed when flushing
+            cell_elems = []
+            for cell in cells:
+                ct = str(cell.get("type", "td")).lower()
+                ct_pdf = "TH" if ct == "th" else "TD"
+                c_text = str(cell.get("text", "")).strip()
+                ce = make_elem(ct_pdf, tr, actual_text=c_text)
+                if ct == "th":
+                    ce["/Scope"] = Name("/Col")
+                cell_elems.append(ce)
+            tr["/K"] = Array(cell_elems)
+            tr_buf.append(tr)
+        elif t == "caption":
+            children.append(make_elem("Caption", sect, actual_text=text))
+        else:
+            # p or unknown → P
+            children.append(make_elem("P", sect, actual_text=text))
+
+    # Flush remaining
+    flush_list()
+    flush_table(tr_buf)
+
+    return children
+
+
 def describe_pages_with_ai(page_paths, lang_code="he-IL"):
     """Use Claude Vision (Haiku) to describe each page for WCAG 1.1.1 alt text.
     Only runs when ANTHROPIC_API_KEY env var is set. Returns {page_num: description}."""
@@ -517,7 +657,7 @@ def add_metadata_only(input_pdf, output_pdf, lang="he-IL", title="מסמך נג�
 
 def add_pdfua_tags(input_pdf, output_pdf, lang="he-IL", title="\u05de\u05e1\u05de\u05da \u05e0\u05d2\u05d9\u05e9",
                    author="", page_texts=None, page_titles=None, tables_info=None,
-                   pdf_type="scanned", ai_descriptions=None):
+                   pdf_type="scanned", ai_descriptions=None, page_structures=None):
     import pikepdf
     from pikepdf import Dictionary, Array, Name, String, Stream
 
@@ -525,6 +665,7 @@ def add_pdfua_tags(input_pdf, output_pdf, lang="he-IL", title="\u05de\u05e1\u05d
     if page_titles is None: page_titles = {}
     if tables_info is None: tables_info = {}
     if ai_descriptions is None: ai_descriptions = {}
+    if page_structures is None: page_structures = {}
 
     print("\u05de\u05d5\u05e1\u05d9\u05e3 \u05ea\u05d9\u05d5\u05d2 PDF/UA...")
     pdf = pikepdf.open(input_pdf)
@@ -620,25 +761,31 @@ def add_pdfua_tags(input_pdf, output_pdf, lang="he-IL", title="\u05de\u05e1\u05d
             # For digital PDFs: do NOT add MCID — the original content stream
             # may already contain BDC markers with MCID 0, causing "MCID already
             # present" errors in PAC. Use ActualText/Alt only (no content ref).
-            p = make_elem("P", sect, actual_text=body_text, alt_text=body_text)
-            children.append(p)
+            struct_list = page_structures.get(pg_idx, [])
+            if struct_list:
+                text_children = build_page_elements(struct_list, sect, pdf, make_elem)
+            else:
+                text_children = [make_elem("P", sect, actual_text=body_text, alt_text=body_text)]
+            children.extend(text_children)
         else:
-            # WCAG 1.1.1: tag scan image as Figure with Alt text
-            # Alt = AI description if available, else first 300 chars of OCR text
+            # WCAG 1.1.1: tag scan image as Figure with Alt text (MCID 0)
             fig_alt = (ai_desc if ai_desc
                        else (body_text[:300] if body_text else f"תמונת עמוד {pg_idx}"))
             fig = make_elem("Figure", sect,
                             title_text=f"תמונת עמוד {pg_idx}",
                             alt_text=fig_alt,
                             page_obj=page_obj, mcid=FIG_MCID)
-            # WCAG 1.3.1: OCR text layer as P with ActualText
-            p = make_elem("P", sect,
-                          actual_text=body_text,
-                          alt_text=body_text,
-                          page_obj=page_obj, mcid=TXT_MCID)
-            # ParentTree[pg_idx_0] = [Figure, P] — index = MCID on this page
-            parent_tree_map[pg_idx_0] = [fig, p]
-            children.extend([fig, p])
+            # ParentTree MCID 0 → Figure only; text elements use ActualText (no MCID)
+            parent_tree_map[pg_idx_0] = [fig]
+            children.append(fig)
+
+            # WCAG 1.3.1: build rich structure from AI analysis or fallback to P
+            struct_list = page_structures.get(pg_idx, [])
+            if struct_list:
+                text_children = build_page_elements(struct_list, sect, pdf, make_elem)
+            else:
+                text_children = [make_elem("P", sect, actual_text=body_text)]
+            children.extend(text_children)
 
         for tbl_def in tables_info.get(str(pg_idx), tables_info.get(pg_idx, [])):
             summary = tbl_def.get("summary") or f"\u05d8\u05d1\u05dc\u05d4 \u05d1\u05e2\u05de\u05d5\u05d3 {pg_idx}"
@@ -666,7 +813,9 @@ def add_pdfua_tags(input_pdf, output_pdf, lang="he-IL", title="\u05de\u05e1\u05d
     flat = []
     for pg_idx_0 in sorted(parent_tree_map.keys()):
         flat.append(pikepdf.objects.Integer(pg_idx_0))
-        flat.append(Array(parent_tree_map[pg_idx_0]))
+        entry = parent_tree_map[pg_idx_0]
+        # If only one element (Figure only), store as direct ref; else as array
+        flat.append(entry[0] if len(entry) == 1 else Array(entry))
     str_root["/ParentTree"] = pdf.make_indirect(Dictionary(Nums=Array(flat)))
     str_root["/ParentTreeNextKey"] = pikepdf.objects.Integer(len(parent_tree_map))
     pdf.Root["/StructTreeRoot"] = str_root
@@ -765,13 +914,20 @@ def main():
             add_metadata_only(base_pdf, args.output, lang=args.lang, title=args.title,
                               author=args.author)
         else:
+            # WCAG 1.3.1: analyze document structure with AI for rich semantic tagging
+            page_structures = {}
+            if os.environ.get("ANTHROPIC_API_KEY") and page_paths:
+                page_structures = analyze_structure_with_ai(
+                    page_paths, page_texts, lang_code=args.lang)
+
             add_pdfua_tags(base_pdf, args.output,
                            lang=args.lang, title=args.title, author=args.author,
                            page_texts=page_texts,
                            page_titles=page_titles,
                            tables_info=tables_info,
                            pdf_type=pdf_type,
-                           ai_descriptions=ai_descriptions)
+                           ai_descriptions=ai_descriptions,
+                           page_structures=page_structures)
 
         if args.stamp:
             apply_stamp_to_pdf(args.output)
