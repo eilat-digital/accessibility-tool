@@ -388,15 +388,16 @@ def build_image_pdf(page_paths, page_texts, output_path, stamp=False):
     print(f"PDF בסיסי: {output_path}")
 
 
-def patch_stream(raw, p_mcid, page_w, page_h):
-    bbox = f"[0 0 {page_w:.1f} {page_h:.1f}]".encode()
+def patch_stream(raw, fig_mcid, txt_mcid, page_w, page_h):
+    """Tag image layer as Figure/MCID and text layer as P/MCID (WCAG 1.1.1 + 4.1)."""
     bt_pos = -1
     for needle in (b"\nBT\n", b"\nBT "):
         pos = raw.find(needle)
         if pos >= 0 and (bt_pos < 0 or pos < bt_pos):
             bt_pos = pos + 1
     if bt_pos < 0:
-        return (b"/Artifact <</Type /Layout /BBox " + bbox + b">> BDC\n" +
+        # No text layer — tag entire content as Figure
+        return (b"/Figure <</MCID " + str(fig_mcid).encode() + b">> BDC\n" +
                 raw + b"\n" + b"EMC\n")
     last_Q = raw.rfind(b"\nQ\n", 0, bt_pos)
     search_from = last_Q if last_Q >= 0 else 0
@@ -404,9 +405,9 @@ def patch_stream(raw, p_mcid, page_w, page_h):
     split_pos = (unclosed_q + 1) if unclosed_q >= 0 else bt_pos
     image_part = raw[:split_pos].rstrip(b" \n")
     text_part = raw[split_pos:]
-    return (b"/Artifact <</Type /Layout /BBox " + bbox + b">> BDC\n" +
+    return (b"/Figure <</MCID " + str(fig_mcid).encode() + b">> BDC\n" +
             image_part + b"\n" + b"EMC\n" +
-            b"/P <</MCID " + str(p_mcid).encode() + b">> BDC\n" +
+            b"/P <</MCID " + str(txt_mcid).encode() + b">> BDC\n" +
             text_part.strip(b" \n") + b"\n" + b"EMC\n")
 
 
@@ -604,7 +605,11 @@ def add_pdfua_tags(input_pdf, output_pdf, lang="he-IL", title="\u05de\u05e1\u05d
     pdf.Root["/RoleMap"] = pdf.make_indirect(Dictionary())
 
     parent_tree_map = {}
-    P_MCID = 0
+    # MCIDs per page (reset per page — PDF spec §14.7.4.4):
+    #   MCID 0 → Figure (scan image)
+    #   MCID 1 → P     (OCR text layer)
+    FIG_MCID = 0
+    TXT_MCID = 1
 
     def make_elem(stype, parent, title_text="", actual_text="", alt_text="", page_obj=None, mcid=None):
         d = Dictionary(Type=Name("/StructElem"), S=Name(f"/{stype}"), P=parent)
@@ -649,13 +654,24 @@ def add_pdfua_tags(input_pdf, output_pdf, lang="he-IL", title="\u05de\u05e1\u05d
             # may already contain BDC markers with MCID 0, causing "MCID already
             # present" errors in PAC. Use ActualText/Alt only (no content ref).
             p = make_elem("P", sect, actual_text=body_text, alt_text=body_text)
+            children.append(p)
         else:
+            # WCAG 1.1.1: tag scan image as Figure with Alt text
+            # Alt = AI description if available, else first 300 chars of OCR text
+            fig_alt = (ai_desc if ai_desc
+                       else (body_text[:300] if body_text else f"תמונת עמוד {pg_idx}"))
+            fig = make_elem("Figure", sect,
+                            title_text=f"תמונת עמוד {pg_idx}",
+                            alt_text=fig_alt,
+                            page_obj=page_obj, mcid=FIG_MCID)
+            # WCAG 1.3.1: OCR text layer as P with ActualText
             p = make_elem("P", sect,
                           actual_text=body_text,
                           alt_text=body_text,
-                          page_obj=page_obj, mcid=P_MCID)
-            parent_tree_map[pg_idx_0] = [p]
-        children.append(p)
+                          page_obj=page_obj, mcid=TXT_MCID)
+            # ParentTree[pg_idx_0] = [Figure, P] — index = MCID on this page
+            parent_tree_map[pg_idx_0] = [fig, p]
+            children.extend([fig, p])
 
         for tbl_def in tables_info.get(str(pg_idx), tables_info.get(pg_idx, [])):
             summary = tbl_def.get("summary") or f"\u05d8\u05d1\u05dc\u05d4 \u05d1\u05e2\u05de\u05d5\u05d3 {pg_idx}"
@@ -676,7 +692,7 @@ def add_pdfua_tags(input_pdf, output_pdf, lang="he-IL", title="\u05de\u05e1\u05d
             children.append(tbl)
 
         sect["/K"] = Array(children)
-        page_patch_info.append((P_MCID, pw, ph))
+        page_patch_info.append((FIG_MCID, TXT_MCID, pw, ph))
 
     doc_elem["/K"] = Array(sect_elems)
 
@@ -691,7 +707,7 @@ def add_pdfua_tags(input_pdf, output_pdf, lang="he-IL", title="\u05de\u05e1\u05d
     for pg_idx, page in enumerate(pages):
         if pdf_type == 'digital':
             continue  # Never touch digital PDF content streams — avoids MCID conflicts
-        m_p, pw, ph = page_patch_info[pg_idx]
+        fig_m, txt_m, pw, ph = page_patch_info[pg_idx]
         try:
             raw_obj = page.obj.get("/Contents")
             if raw_obj is None: continue
@@ -700,7 +716,7 @@ def add_pdfua_tags(input_pdf, output_pdf, lang="he-IL", title="\u05de\u05e1\u05d
                 if isinstance(obj, pikepdf.Array): return b"".join(get_bytes(x) for x in obj)
                 return b""
             orig = get_bytes(raw_obj)
-            new_data = patch_stream(orig, m_p, pw, ph)
+            new_data = patch_stream(orig, fig_m, txt_m, pw, ph)
             page.obj["/Contents"] = pdf.make_indirect(Stream(pdf, new_data))
         except Exception as e:
             print(f"   content stream עמוד {pg_idx + 1}: {e}")
