@@ -23,6 +23,8 @@ def ensure_deps():
         sys.exit(1)
 
 
+STAMP_SVG_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static", "accessibility_stamp.svg")
+
 FONT_CANDIDATES = [
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
@@ -109,61 +111,156 @@ def run_ocr(page_paths, lang_code="he-IL"):
     return texts
 
 
-def _make_stamp_stream(pw, ph):
-    """Small, clean accessibility badge — bottom-right corner.
-    6mm radius disc: solid blue fill + white checkmark stroke.
-    Wrapped in Artifact so PAC does not flag it as untagged content."""
-    mm = 2.8346
-    R  = 6.0 * mm   # 6 mm radius — small and unobtrusive
-    M  = 4.0 * mm   # margin from edge
-    cx = pw - M - R
-    cy = M + R
-    bbox = f"[{cx-R:.3f} {cy-R:.3f} {cx+R:.3f} {cy+R:.3f}]"
+def _svg_to_png_bytes(svg_path, size=150):
+    """Convert SVG to cropped PNG bytes using svglib. Returns None on failure."""
+    try:
+        from svglib.svglib import svg2rlg
+        from reportlab.graphics import renderPM
+        from PIL import Image as PILImage
+        import io
 
-    def circ(x, y, r):
-        k = r * 0.5523
-        return (
-            f"{x:.3f} {y+r:.3f} m "
-            f"{x+k:.3f} {y+r:.3f} {x+r:.3f} {y+k:.3f} {x+r:.3f} {y:.3f} c "
-            f"{x+r:.3f} {y-k:.3f} {x+k:.3f} {y-r:.3f} {x:.3f} {y-r:.3f} c "
-            f"{x-k:.3f} {y-r:.3f} {x-r:.3f} {y-k:.3f} {x-r:.3f} {y:.3f} c "
-            f"{x-r:.3f} {y+k:.3f} {x-k:.3f} {y+r:.3f} {x:.3f} {y+r:.3f} c h"
-        )
+        drawing = svg2rlg(svg_path)
+        if drawing is None:
+            return None
 
-    lw = R * 0.18   # checkmark stroke width
+        # Render at high resolution (1200px base) then crop + downsample — avoids pixelation
+        scale = 1200 / max(drawing.width, drawing.height)
+        drawing.width  *= scale
+        drawing.height *= scale
+        drawing.transform = (scale, 0, 0, scale, 0, 0)
 
-    ops = "\n".join([
-        f"/Artifact <</Type /Layout /Attached [/Bottom /Right] /BBox {bbox}>> BDC",
-        "q",
-        # solid dark-blue disc
-        "0.102 0.306 0.541 rg",
-        circ(cx, cy, R), "f",
-        # white checkmark (✓): left-bottom → dip → upper-right
-        "1 1 1 RG",
-        f"{lw:.3f} w", "1 J 1 j",
-        (f"{cx - R*0.38:.3f} {cy + R*0.05:.3f} m "
-         f"{cx - R*0.10:.3f} {cy - R*0.32:.3f} l "
-         f"{cx + R*0.42:.3f} {cy + R*0.38:.3f} l"),
-        "S",
-        "Q",
-        "EMC",
-    ])
-    return ops.encode()
+        buf = io.BytesIO()
+        renderPM.drawToFile(drawing, buf, fmt="PNG")  # white background
+        buf.seek(0)
+
+        img = PILImage.open(buf).convert("RGBA")
+
+        # Convert white/near-white background to transparent
+        # (SVG has only teal content — no white in the design itself)
+        pixels = img.load()
+        for y2 in range(img.height):
+            for x2 in range(img.width):
+                r, g, b, a = pixels[x2, y2]
+                if r > 230 and g > 230 and b > 230:
+                    pixels[x2, y2] = (r, g, b, 0)
+
+        # Crop to bounding box of non-transparent pixels
+        bbox = img.getbbox()
+        if bbox:
+            img = img.crop(bbox)
+        # Resize proportionally — do NOT force square (avoids distortion)
+        img.thumbnail((size, size), PILImage.LANCZOS)
+
+        out = io.BytesIO()
+        img.save(out, "PNG")
+        return out.getvalue()
+    except Exception as e:
+        print(f"   SVG→PNG: {e}")
+        return None
+
+
+def _make_image_xobject(pdf, png_bytes):
+    """Create pikepdf Image XObject with transparency from PNG bytes."""
+    import io, zlib
+    from PIL import Image as PILImage
+    import pikepdf
+
+    img = PILImage.open(io.BytesIO(png_bytes)).convert("RGBA")
+    w, h = img.size
+
+    rgb_data  = zlib.compress(img.convert("RGB").tobytes())
+    alpha_data = zlib.compress(img.split()[3].tobytes())
+
+    smask = pdf.make_indirect(pikepdf.Stream(pdf, alpha_data))
+    smask["/Type"]             = pikepdf.Name("/XObject")
+    smask["/Subtype"]          = pikepdf.Name("/Image")
+    smask["/Width"]            = pikepdf.objects.Integer(w)
+    smask["/Height"]           = pikepdf.objects.Integer(h)
+    smask["/ColorSpace"]       = pikepdf.Name("/DeviceGray")
+    smask["/BitsPerComponent"] = pikepdf.objects.Integer(8)
+    smask["/Filter"]           = pikepdf.Name("/FlateDecode")
+
+    xobj = pdf.make_indirect(pikepdf.Stream(pdf, rgb_data))
+    xobj["/Type"]             = pikepdf.Name("/XObject")
+    xobj["/Subtype"]          = pikepdf.Name("/Image")
+    xobj["/Width"]            = pikepdf.objects.Integer(w)
+    xobj["/Height"]           = pikepdf.objects.Integer(h)
+    xobj["/ColorSpace"]       = pikepdf.Name("/DeviceRGB")
+    xobj["/BitsPerComponent"] = pikepdf.objects.Integer(8)
+    xobj["/Filter"]           = pikepdf.Name("/FlateDecode")
+    xobj["/SMask"]            = smask
+
+    return xobj, w, h
 
 
 def apply_stamp_to_pdf(pdf_path):
-    """Overlay accessibility badge on every page of any PDF. In-place."""
+    """Overlay accessibility badge (SVG or fallback disc) on every page. In-place."""
     import pikepdf, shutil, os
-    from pikepdf import Stream as PdfStream, Array as PdfArray
+    from pikepdf import Stream as PdfStream, Array as PdfArray, Dictionary
+
+    mm = 2.8346
+    STAMP_PTS = 16 * mm   # 16 mm — small but visible
+    MARGIN    =  5 * mm
+
+    # Load SVG stamp → PNG bytes
+    png_bytes = _svg_to_png_bytes(STAMP_SVG_PATH) if os.path.exists(STAMP_SVG_PATH) else None
 
     tmp = pdf_path + ".stamp_tmp"
     try:
         with pikepdf.open(pdf_path) as pdf:
+            xobj = None
+            if png_bytes:
+                xobj, _w, _h = _make_image_xobject(pdf, png_bytes)
+
             for page in pdf.pages:
                 mb = page.obj.get("/MediaBox")
                 pw = float(mb[2]) if mb else 595.0
                 ph = float(mb[3]) if mb else 842.0
-                s = pdf.make_indirect(PdfStream(pdf, _make_stamp_stream(pw, ph)))
+
+                x = pw - MARGIN - STAMP_PTS
+                y = MARGIN
+                bbox = f"[{x:.3f} {y:.3f} {x+STAMP_PTS:.3f} {y+STAMP_PTS:.3f}]"
+
+                if xobj is not None:
+                    # Add XObject to page resources
+                    if "/Resources" not in page.obj:
+                        page.obj["/Resources"] = pdf.make_indirect(Dictionary())
+                    res = page.obj["/Resources"]
+                    if "/XObject" not in res:
+                        res["/XObject"] = pdf.make_indirect(Dictionary())
+                    res["/XObject"]["/AccessStamp"] = xobj
+
+                    stream_data = (
+                        f"/Artifact <</Type /Layout /Attached [/Bottom /Right] /BBox {bbox}>> BDC\n"
+                        f"q\n"
+                        f"{STAMP_PTS:.3f} 0 0 {STAMP_PTS:.3f} {x:.3f} {y:.3f} cm\n"
+                        f"/AccessStamp Do\n"
+                        f"Q\nEMC\n"
+                    ).encode()
+                else:
+                    # Fallback: simple teal disc (matches SVG color #0097b2)
+                    R  = STAMP_PTS / 2
+                    cx = x + R
+                    cy = y + R
+                    k  = R * 0.5523
+                    lw = R * 0.18
+                    stream_data = "\n".join([
+                        f"/Artifact <</Type /Layout /Attached [/Bottom /Right] /BBox {bbox}>> BDC",
+                        "q",
+                        "0.0 0.592 0.698 rg",
+                        (f"{cx:.3f} {cy+R:.3f} m "
+                         f"{cx+k:.3f} {cy+R:.3f} {cx+R:.3f} {cy+k:.3f} {cx+R:.3f} {cy:.3f} c "
+                         f"{cx+R:.3f} {cy-k:.3f} {cx+k:.3f} {cy-R:.3f} {cx:.3f} {cy-R:.3f} c "
+                         f"{cx-k:.3f} {cy-R:.3f} {cx-R:.3f} {cy-k:.3f} {cx-R:.3f} {cy:.3f} c "
+                         f"{cx-R:.3f} {cy+k:.3f} {cx-k:.3f} {cy+R:.3f} {cx:.3f} {cy+R:.3f} c h f"),
+                        "1 1 1 RG", f"{lw:.3f} w 1 J 1 j",
+                        (f"{cx-R*0.38:.3f} {cy+R*0.05:.3f} m "
+                         f"{cx-R*0.10:.3f} {cy-R*0.32:.3f} l "
+                         f"{cx+R*0.42:.3f} {cy+R*0.38:.3f} l S"),
+                        "Q\nEMC",
+                    ]).encode()
+
+                s = pdf.make_indirect(PdfStream(pdf, stream_data))
                 existing = page.obj.get("/Contents")
                 if existing is None:
                     page.obj["/Contents"] = s
@@ -171,9 +268,11 @@ def apply_stamp_to_pdf(pdf_path):
                     existing.append(s)
                 else:
                     page.obj["/Contents"] = PdfArray([existing, s])
+
             pdf.save(tmp)
         shutil.move(tmp, pdf_path)
-        print("   חותמת נגישות הוספה")
+        label = "SVG" if png_bytes else "ברירת מחדל"
+        print(f"   חותמת נגישות הוספה ({label})")
     except Exception as e:
         print(f"   stamp warning: {e}")
         if os.path.exists(tmp):
