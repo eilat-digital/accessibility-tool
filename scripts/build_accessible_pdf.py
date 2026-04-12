@@ -496,7 +496,12 @@ def build_image_pdf(page_paths, page_texts, output_path, stamp=False):
 
 
 def patch_stream(raw, fig_mcid, txt_mcid, page_w, page_h):
-    """Tag image layer as Figure/MCID and text layer as P/MCID (WCAG 1.1.1 + 4.1)."""
+    """Tag image layer as Figure/MCID and OCR text layer as Artifact (WCAG 1.1.1 + PDF/UA).
+
+    The invisible OCR text (renderMode=3) is tagged as Artifact — not as a structure MCID.
+    Semantic content is provided via ActualText on structure elements.
+    This avoids orphaned MCIDs in content streams that cause PAC failures.
+    """
     bt_pos = -1
     for needle in (b"\nBT\n", b"\nBT "):
         pos = raw.find(needle)
@@ -512,9 +517,11 @@ def patch_stream(raw, fig_mcid, txt_mcid, page_w, page_h):
     split_pos = (unclosed_q + 1) if unclosed_q >= 0 else bt_pos
     image_part = raw[:split_pos].rstrip(b" \n")
     text_part = raw[split_pos:]
+    # OCR text is invisible (renderMode=3) → Artifact, not a structure element MCID.
+    # ActualText on structure elements carries the semantic meaning for screen readers.
     return (b"/Figure <</MCID " + str(fig_mcid).encode() + b">> BDC\n" +
             image_part + b"\n" + b"EMC\n" +
-            b"/P <</MCID " + str(txt_mcid).encode() + b">> BDC\n" +
+            b"/Artifact <</Type /Layout /Subtype /Background>> BDC\n" +
             text_part.strip(b" \n") + b"\n" + b"EMC\n")
 
 
@@ -796,7 +803,7 @@ def add_pdfua_tags(input_pdf, output_pdf, lang="he-IL", title="\u05de\u05e1\u05d
                 tr_h = make_elem("TR", tbl)
                 th_list = []
                 for hdr in headers:
-                    th = make_elem("TH", tr_h, actual_text=hdr, alt_text=hdr)
+                    th = make_elem("TH", tr_h, actual_text=hdr)
                     th["/Scope"] = Name("/Col")
                     th_list.append(th)
                 tr_h["/K"] = Array(th_list)
