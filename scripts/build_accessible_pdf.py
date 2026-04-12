@@ -397,7 +397,7 @@ def fix_standard_font_encoding(pdf):
         print(f"   ToUnicode הוזרק ל-{len(fixed)} פונטים")
 
 
-def add_metadata_only(input_pdf, output_pdf, lang="he-IL", title="מסמך נגיש"):
+def add_metadata_only(input_pdf, output_pdf, lang="he-IL", title="מסמך נגיש", author=""):
     """For digital PDFs: only add PDF/UA metadata — never touch StructTreeRoot or content streams."""
     import pikepdf
     from pikepdf import Dictionary, Name, String
@@ -415,6 +415,9 @@ def add_metadata_only(input_pdf, output_pdf, lang="he-IL", title="מסמך נג�
     with pdf.open_metadata() as meta:
         meta["dc:title"] = title
         meta["dc:language"] = lang
+        if author:
+            meta["dc:creator"] = [author]
+        # PDF/UA-1 identifier — ISO 14289-1 §6.2 (required for IS 5568 compliance)
         try:
             meta["pdfuaid:part"] = "1"
         except Exception:
@@ -428,6 +431,8 @@ def add_metadata_only(input_pdf, output_pdf, lang="he-IL", title="מסמך נג�
         if "/Info" not in pdf.trailer:
             pdf.trailer["/Info"] = pdf.make_indirect(Dictionary())
         pdf.trailer["/Info"]["/Title"] = String(title)
+        if author:
+            pdf.trailer["/Info"]["/Author"] = String(author)
     except Exception:
         pass
 
@@ -444,8 +449,8 @@ def add_metadata_only(input_pdf, output_pdf, lang="he-IL", title="מסמך נג�
 
 
 def add_pdfua_tags(input_pdf, output_pdf, lang="he-IL", title="\u05de\u05e1\u05de\u05da \u05e0\u05d2\u05d9\u05e9",
-                   page_texts=None, page_titles=None, tables_info=None, pdf_type="scanned",
-                   ai_descriptions=None):
+                   author="", page_texts=None, page_titles=None, tables_info=None,
+                   pdf_type="scanned", ai_descriptions=None):
     import pikepdf
     from pikepdf import Dictionary, Array, Name, String, Stream
 
@@ -469,7 +474,9 @@ def add_pdfua_tags(input_pdf, output_pdf, lang="he-IL", title="\u05de\u05e1\u05d
     with pdf.open_metadata() as meta:
         meta["dc:title"] = title
         meta["dc:language"] = lang
-        # PDF/UA-1 identifier — required for WCAG 2.2 / PDF/UA compliance
+        if author:
+            meta["dc:creator"] = [author]
+        # PDF/UA-1 identifier — ISO 14289-1 §6.2 (required for IS 5568 compliance)
         try:
             meta["pdfuaid:part"] = "1"
         except Exception:
@@ -483,6 +490,8 @@ def add_pdfua_tags(input_pdf, output_pdf, lang="he-IL", title="\u05de\u05e1\u05d
         if "/Info" not in pdf.trailer:
             pdf.trailer["/Info"] = pdf.make_indirect(Dictionary())
         pdf.trailer["/Info"]["/Title"] = String(title)
+        if author:
+            pdf.trailer["/Info"]["/Author"] = String(author)
     except Exception:
         pass
 
@@ -608,6 +617,7 @@ def main():
     parser.add_argument("--output",       required=True)
     parser.add_argument("--lang",         default="he-IL")
     parser.add_argument("--title",        default="\u05de\u05e1\u05de\u05da \u05e0\u05d2\u05d9\u05e9")
+    parser.add_argument("--author",       default="")
     parser.add_argument("--dpi",          type=int, default=200)
     parser.add_argument("--stamp",        action="store_true")
     parser.add_argument("--ocr",          action="store_true")
@@ -670,10 +680,11 @@ def main():
             # Digital PDFs already have a StructTreeRoot with MCIDs in content streams.
             # Replacing it breaks the MCID→struct mapping → 2984+ Content failures in PAC.
             # Only add PDF/UA metadata (XMP, Lang, ViewerPreferences) — leave structure intact.
-            add_metadata_only(base_pdf, args.output, lang=args.lang, title=args.title)
+            add_metadata_only(base_pdf, args.output, lang=args.lang, title=args.title,
+                              author=args.author)
         else:
             add_pdfua_tags(base_pdf, args.output,
-                           lang=args.lang, title=args.title,
+                           lang=args.lang, title=args.title, author=args.author,
                            page_texts=page_texts,
                            page_titles=page_titles,
                            tables_info=tables_info,

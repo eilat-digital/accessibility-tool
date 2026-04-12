@@ -99,58 +99,114 @@ def log_operation(job_id, operation, status, message=""):
         logger.error(f"Failed to log operation: {e}")
 
 def validate_pdf_accessibility(pdf_path):
-    """בדיקת נגישות אמיתית של PDF וחישוב ציון (0-100)"""
+    """בדיקת נגישות אמיתית של PDF לפי IS 5568 / PDF/UA-1 (ציון 0-100)
+
+    משקלות לפי דרישות חוק הנגישות הישראלי:
+      35 — שכבת טקסט (OCR) — WCAG 1.4.5, IS 5568 §7.1
+      25 — תיוג מבנה PDF/UA (StructTreeRoot) — IS 5568 §7.2
+      20 — שפת המסמך מוגדרת (/Lang) — WCAG 3.1.1
+      10 — כותרת מוגדרת (/Title) — PDF/UA §7.4
+       5 — מזהה PDF/UA-1 ב-XMP (pdfuaid:part) — ISO 14289-1 §6.2
+       5 — MarkInfo/Marked = true — PDF/UA §7.3
+    """
     try:
         import pikepdf
 
         score_data = {
-            'has_text_content': 0,   # 40 — טקסט קריא (OCR)
+            'has_text_content': 0,   # 35 — שכבת טקסט קריאה (OCR / דיגיטלי)
+            'has_struct_tree': 0,    # 25 — תיוג מבנה PDF/UA
             'has_lang': 0,           # 20 — שפת המסמך מוגדרת
-            'has_title': 0,          # 15 — כותרת מוגדרת
-            'has_author': 0,         # 10 — מחבר מוגדר
-            'has_struct_tree': 0,    # 15 — תיוג מבנה PDF/UA
+            'has_title': 0,          # 10 — כותרת מוגדרת
+            'has_pdfua_id': 0,       #  5 — מזהה PDF/UA-1 ב-XMP
+            'has_markinfo': 0,       #  5 — MarkInfo/Marked=true
         }
 
         with pikepdf.open(pdf_path) as pdf:
             total_pages = len(pdf.pages)
 
-            # בדיקת תוכן טקסט בעמודים
-            text_pages = 0
-            check_pages = min(5, total_pages)
-            for page in pdf.pages[:check_pages]:
-                if page.get('/Contents'):
-                    text_pages += 1
-            if total_pages > 0:
-                ratio = text_pages / check_pages if check_pages > 0 else 0
-                score_data['has_text_content'] = int(40 * ratio)
-
-            # בדיקת מטאדאטה
-            meta = pdf.docinfo
-            if str(meta.get('/Title', '')).strip():
-                score_data['has_title'] = 15
-            if str(meta.get('/Author', '')).strip():
-                score_data['has_author'] = 10
-
-            # בדיקת שפה — ב-Root או ב-docinfo
-            root_lang = str(pdf.Root.get('/Lang', ''))
-            meta_lang = str(meta.get('/Lang', ''))
-            if root_lang or meta_lang:
-                score_data['has_lang'] = 20
+            # בדיקת טקסט — pdfminer מחלץ טקסט בפועל (לא רק קיום stream)
+            try:
+                from pdfminer.high_level import extract_text
+                sample_pages = list(range(min(3, total_pages)))
+                text_sample = extract_text(pdf_path, page_numbers=sample_pages) or ''
+                if len(text_sample.strip()) > 20:
+                    score_data['has_text_content'] = 35
+                elif len(text_sample.strip()) > 5:
+                    score_data['has_text_content'] = 15  # טקסט חלקי
+            except Exception:
+                # fallback: בדוק אם יש אופרטורי טקסט ב-stream
+                for page in pdf.pages[:min(3, total_pages)]:
+                    try:
+                        raw_obj = page.obj.get('/Contents')
+                        if raw_obj is None:
+                            continue
+                        if hasattr(raw_obj, 'read_bytes'):
+                            raw = raw_obj.read_bytes()
+                        elif isinstance(raw_obj, pikepdf.Array):
+                            raw = b''.join(x.read_bytes() for x in raw_obj if hasattr(x, 'read_bytes'))
+                        else:
+                            raw = b''
+                        # אופרטורי טקסט ב-PDF: Tj, TJ, Tf
+                        if b'Tj' in raw or b'TJ' in raw:
+                            score_data['has_text_content'] = 35
+                            break
+                    except Exception:
+                        pass
 
             # בדיקת תיוג מבנה PDF/UA
             if '/StructTreeRoot' in pdf.Root:
-                score_data['has_struct_tree'] = 15
+                score_data['has_struct_tree'] = 25
+
+            # בדיקת שפה — ב-Root (PDF/UA דרישה ראשית)
+            root_lang = str(pdf.Root.get('/Lang', '')).strip()
+            if root_lang:
+                score_data['has_lang'] = 20
+            else:
+                # fallback: Lang ב-docinfo (לא מספיק ל-PDF/UA אבל חלקי)
+                meta_lang = str(pdf.docinfo.get('/Lang', '')).strip()
+                if meta_lang:
+                    score_data['has_lang'] = 10
+
+            # בדיקת כותרת
+            meta = pdf.docinfo
+            if str(meta.get('/Title', '')).strip():
+                score_data['has_title'] = 10
+
+            # בדיקת מזהה PDF/UA-1 ב-XMP — ISO 14289-1 §6.2
+            try:
+                with pdf.open_metadata() as xmp:
+                    pdfua_part = xmp.get('pdfuaid:part', '')
+                    if str(pdfua_part).strip() == '1':
+                        score_data['has_pdfua_id'] = 5
+            except Exception:
+                pass
+
+            # בדיקת MarkInfo/Marked = true — PDF/UA §7.3
+            mark_info = pdf.Root.get('/MarkInfo')
+            if mark_info is not None:
+                marked = mark_info.get('/Marked')
+                if marked is not None and bool(marked):
+                    score_data['has_markinfo'] = 5
 
         total_score = min(100, sum(score_data.values()))
+
+        # מיפוי לתקן IS 5568
+        if total_score >= 85:
+            compliance_status = 'compliant'          # עומד בתקן
+        elif total_score >= 60:
+            compliance_status = 'needs_review'       # דורש בדיקה
+        else:
+            compliance_status = 'non_compliant'      # אינו עומד בתקן
 
         report = {
             'score': total_score,
             'components': score_data,
             'validation_date': datetime.now().isoformat(),
-            'status': 'compliant' if total_score >= 70 else 'needs_review'
+            'standard': 'IS 5568 / PDF/UA-1 / WCAG 2.2',
+            'status': compliance_status
         }
 
-        logger.info(f"PDF validated: score={report['score']}, status={report['status']}")
+        logger.info(f"PDF validated (IS 5568): score={report['score']}, status={report['status']}")
         return report
 
     except Exception as e:
@@ -200,6 +256,7 @@ def process_pdf(job_id, input_path, output_path, original_name, file_size):
             '--output', str(output_path),
             '--lang', 'he-IL',
             '--title', title,
+            '--author', 'עיריית אילת',
             '--dpi', dpi,
             '--stamp',
             '--ocr',   # IS 5568: scanned PDFs must have a text layer for screen readers
