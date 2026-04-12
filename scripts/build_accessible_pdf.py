@@ -750,9 +750,8 @@ def add_pdfua_tags(input_pdf, output_pdf, lang="he-IL", title="\u05de\u05e1\u05d
                       (page_text.split("\n")[0].strip() if page_text else f"\u05e2\u05de\u05d5\u05d3 {pg_idx}"))
 
         ai_desc = ai_descriptions.get(pg_idx, "")
-        sect = make_elem("Sect", doc_elem,
-                         title_text=f"\u05e2\u05de\u05d5\u05d3 {pg_idx}",
-                         alt_text=ai_desc if ai_desc else "")
+        # Sect is a container — must NOT have /Alt (PDF/UA: nested alt text forbidden)
+        sect = make_elem("Sect", doc_elem, title_text=f"\u05e2\u05de\u05d5\u05d3 {pg_idx}")
         sect_elems.append(sect)
         children = []
 
