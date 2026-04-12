@@ -23,7 +23,7 @@ def ensure_deps():
         sys.exit(1)
 
 
-STAMP_SVG_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static", "accessibility_stamp.svg")
+STAMP_PNG_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static", "accessibility_stamp.png")
 
 FONT_CANDIDATES = [
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
@@ -111,51 +111,18 @@ def run_ocr(page_paths, lang_code="he-IL"):
     return texts
 
 
-def _svg_to_png_bytes(svg_path, size=150):
-    """Convert SVG to cropped PNG bytes using svglib. Returns None on failure."""
+def _load_stamp_png(png_path, size=150):
+    """Load pre-rendered stamp PNG. Returns None on failure."""
     try:
-        from svglib.svglib import svg2rlg
-        from reportlab.graphics import renderPM
         from PIL import Image as PILImage
         import io
-
-        drawing = svg2rlg(svg_path)
-        if drawing is None:
-            return None
-
-        # Render at high resolution (1200px base) then crop + downsample — avoids pixelation
-        scale = 1200 / max(drawing.width, drawing.height)
-        drawing.width  *= scale
-        drawing.height *= scale
-        drawing.transform = (scale, 0, 0, scale, 0, 0)
-
-        buf = io.BytesIO()
-        renderPM.drawToFile(drawing, buf, fmt="PNG")  # white background
-        buf.seek(0)
-
-        img = PILImage.open(buf).convert("RGBA")
-
-        # Convert white/near-white background to transparent
-        # (SVG has only teal content — no white in the design itself)
-        pixels = img.load()
-        for y2 in range(img.height):
-            for x2 in range(img.width):
-                r, g, b, a = pixels[x2, y2]
-                if r > 230 and g > 230 and b > 230:
-                    pixels[x2, y2] = (r, g, b, 0)
-
-        # Crop to bounding box of non-transparent pixels
-        bbox = img.getbbox()
-        if bbox:
-            img = img.crop(bbox)
-        # Resize proportionally — do NOT force square (avoids distortion)
+        img = PILImage.open(png_path).convert("RGBA")
         img.thumbnail((size, size), PILImage.LANCZOS)
-
         out = io.BytesIO()
         img.save(out, "PNG")
         return out.getvalue()
     except Exception as e:
-        print(f"   SVG→PNG: {e}")
+        print(f"   PNG stamp: {e}")
         return None
 
 
@@ -202,8 +169,8 @@ def apply_stamp_to_pdf(pdf_path):
     STAMP_PTS = 16 * mm   # 16 mm — small but visible
     MARGIN    =  5 * mm
 
-    # Load SVG stamp → PNG bytes
-    png_bytes = _svg_to_png_bytes(STAMP_SVG_PATH) if os.path.exists(STAMP_SVG_PATH) else None
+    # Load pre-rendered PNG stamp
+    png_bytes = _load_stamp_png(STAMP_PNG_PATH) if os.path.exists(STAMP_PNG_PATH) else None
 
     tmp = pdf_path + ".stamp_tmp"
     try:

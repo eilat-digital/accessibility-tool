@@ -5,7 +5,5 @@ aptPkgs = [
   "tesseract-ocr-ara",
   "tesseract-ocr-eng",
   "poppler-utils",
-  "libreoffice",
-  "libcairo2-dev",
-  "pkg-config"
+  "libreoffice"
 ]
