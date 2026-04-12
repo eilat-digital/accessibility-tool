@@ -797,8 +797,10 @@ def add_pdfua_tags(input_pdf, output_pdf, lang="he-IL", title="\u05de\u05e1\u05d
     for pg_idx_0 in sorted(parent_tree_map.keys()):
         flat.append(pikepdf.objects.Integer(pg_idx_0))
         entry = parent_tree_map[pg_idx_0]
-        # If only one element (Figure only), store as direct ref; else as array
-        flat.append(entry[0] if len(entry) == 1 else Array(entry))
+        # PDF spec §14.7.4.4: value MUST always be an array — MCID i → index i.
+        # Storing a bare ref (not wrapped in Array) makes PAC unable to resolve
+        # the content-to-structure link → 10 failures per page.
+        flat.append(Array(entry))
     str_root["/ParentTree"] = pdf.make_indirect(Dictionary(Nums=Array(flat)))
     str_root["/ParentTreeNextKey"] = pikepdf.objects.Integer(len(parent_tree_map))
     pdf.Root["/StructTreeRoot"] = str_root
