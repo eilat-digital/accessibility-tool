@@ -118,6 +118,8 @@ ALLOWED_EXTENSIONS = {
     '.doc':  'Word (ישן)',
     '.pptx': 'PowerPoint',
     '.ppt':  'PowerPoint (ישן)',
+    '.xlsx': 'Excel',
+    '.xls':  'Excel (ישן)',
 }
 
 def convert_to_pdf(input_path: Path, work_dir: Path) -> Path:
