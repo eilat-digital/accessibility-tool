@@ -712,7 +712,7 @@ def process_digital_pdf(input_pdf, output_pdf, lang="he-IL",
     pre_result = sv.validate(elements, lang=lang, title=title)
     print(f"  ציון מבנה מקדים: {pre_result.score}/100 ({pre_result.status})")
     for w in pre_result.warnings:
-        print(f"  ⚠ {w}")
+        print(f"  [!] {w}")
 
     # Inject tag tree
     shutil.copy2(input_pdf, output_pdf)
@@ -1057,11 +1057,11 @@ def check_structure(pdf_path):
                         # /Alt על grouping ללא MCID — "nested alt text" ב-Acrobat
                         if isinstance(k, pikepdf.Dictionary) or k is None:
                             if grouping:
-                                warnings.append(f"⚠ {s_name} יש /Alt על grouping element (עלול לגרום 'Nested alternate text')")
+                                warnings.append(f"[!] {s_name} יש /Alt על grouping element (עלול לגרום 'Nested alternate text')")
 
                     if not grouping and alt is None and actual_text is None and k is not None:
                         if isinstance(k, pikepdf.objects.Integer):
-                            warnings.append(f"⚠ {s_name} MCID={int(k)} — אין /Alt ולא /ActualText")
+                            warnings.append(f"[!] {s_name} MCID={int(k)} — אין /Alt ולא /ActualText")
 
                     # מעבר על ילדים
                     if isinstance(k, pikepdf.Array):
@@ -1125,12 +1125,12 @@ def check_structure(pdf_path):
                 raw = get_bytes(raw_obj)
                 found = bdc_re.findall(raw)
                 struct_parents = page.obj.get("/StructParents")
-                sp_str = f" StructParents={int(struct_parents)}" if struct_parents is not None else " ⚠ אין StructParents"
+                sp_str = f" StructParents={int(struct_parents)}" if struct_parents is not None else " [!] אין StructParents"
                 if found:
                     tags = ", ".join(f"{t.decode()}/MCID={m.decode()}" for t, m in found)
                     print(f"  עמוד {pg_num}{sp_str}: {tags}")
                 else:
-                    print(f"  עמוד {pg_num}{sp_str}: ⚠ אין BDC markers — תוכן לא מתויג")
+                    print(f"  עמוד {pg_num}{sp_str}: [!] אין BDC markers — תוכן לא מתויג")
                     warnings.append(f"עמוד {pg_num}: אין BDC markers בזרם התוכן")
             except Exception as ex:
                 print(f"  עמוד {pg_num}: שגיאה — {ex}")
