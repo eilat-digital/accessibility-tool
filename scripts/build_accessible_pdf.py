@@ -713,17 +713,8 @@ def add_pdfua_tags(input_pdf, output_pdf, lang="he-IL", title="\u05de\u05e1\u05d
         if actual_text: d["/ActualText"] = String(actual_text)
         if alt_text: d["/Alt"] = String(alt_text)
         if mcid is not None and page_obj is not None:
-            # Use explicit MCR dictionary (PDF spec §14.7.4.2 Table 324).
-            # The explicit form is unambiguous — Acrobat's "Associated with content"
-            # check requires a verifiable page+MCID pair; a bare integer with /Pg
-            # on the struct element can fail to resolve in strict validators.
-            mcr = pdf.make_indirect(Dictionary(
-                Type=Name("/MCR"),
-                Pg=page_obj,
-                MCID=pikepdf.objects.Integer(mcid),
-            ))
-            d["/K"] = mcr
-            d["/Pg"] = page_obj  # keep for fast page lookup
+            d["/K"] = pikepdf.objects.Integer(mcid)
+            d["/Pg"] = page_obj
         return pdf.make_indirect(d)
 
     str_root = pdf.make_indirect(Dictionary(Type=Name("/StructTreeRoot"), Lang=String(lang)))
@@ -734,7 +725,7 @@ def add_pdfua_tags(input_pdf, output_pdf, lang="he-IL", title="\u05de\u05e1\u05d
 
     for pg_idx, page in enumerate(pages, 1):
         pg_idx_0 = pg_idx - 1
-        page_obj = page.obj
+        page_obj = pdf.make_indirect(page.obj)  # ensure indirect ref for /Pg in struct elements
         page_obj["/Tabs"] = Name("/S")
         page_obj["/StructParents"] = pikepdf.objects.Integer(pg_idx_0)
 
