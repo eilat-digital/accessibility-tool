@@ -827,10 +827,211 @@ def add_pdfua_tags(input_pdf, output_pdf, lang="he-IL", title="\u05de\u05e1\u05d
     print(f"\u2705 PDF \u05e0\u05d2\u05d9\u05e9: {output_pdf}")
 
 
+def check_structure(pdf_path):
+    """
+    בדיקת היררכיית תוכן של PDF מעובד.
+    מדפיס: עץ מבנה, ParentTree, MCIDs בכל עמוד, ושגיאות.
+    שימוש: python build_accessible_pdf.py --check-structure path/to/output.pdf
+    """
+    import re, sys
+    # Windows terminal: force UTF-8 so Hebrew prints correctly
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
+    try:
+        import pikepdf
+        from pikepdf import Dictionary, Array, Name
+    except ImportError:
+        print("❌ pikepdf לא מותקן")
+        return
+
+    print(f"\n{'='*60}")
+    print(f"[STRUCT] {pdf_path}")
+    print('='*60)
+
+    errors = []
+    warnings = []
+
+    with pikepdf.open(pdf_path) as pdf:
+        root = pdf.Root
+
+        # ── 1. בדיקות מטא-דאטה בסיסיות ──────────────────────────
+        print("\n[META]")
+        lang = root.get("/Lang", "")
+        print(f"  /Lang       = {lang!r}")
+        if not lang:
+            errors.append("/Lang חסר ב-Root")
+
+        mark_info = root.get("/MarkInfo", {})
+        marked = mark_info.get("/Marked", False) if mark_info else False
+        print(f"  /MarkInfo   = Marked={bool(marked)}")
+        if not marked:
+            errors.append("/MarkInfo/Marked אינו True")
+
+        # ── 2. עץ המבנה ───────────────────────────────────────────
+        str_root = root.get("/StructTreeRoot")
+        if not str_root:
+            errors.append("אין StructTreeRoot — המסמך אינו tagged")
+            _report(errors, warnings)
+            return
+
+        print("\n[TREE] עץ מבנה (StructTreeRoot):")
+
+        def elem_label(e):
+            try:
+                s  = str(e.get("/S", "?")).lstrip("/")
+                t  = str(e.get("/T", "")).strip('"\'')
+                at = str(e.get("/ActualText", ""))[:40].strip('"\'')
+                al = str(e.get("/Alt", ""))[:40].strip('"\'')
+                pg = e.get("/Pg")
+                k  = e.get("/K")
+                mcid = f" MCID={int(k)}" if isinstance(k, pikepdf.objects.Integer) else ""
+                page_num = ""
+                if pg:
+                    for i, page in enumerate(pdf.pages):
+                        if page.obj.objgen == pg.objgen:
+                            page_num = f" עמוד={i+1}"
+                            break
+                has_alt  = " ✔Alt"  if al  else ""
+                has_at   = " ✔ActualText" if at else ""
+                label = f"<{s}>{mcid}{page_num}{has_alt}{has_at}"
+                if t: label += f" [{t}]"
+                return label, s
+            except Exception as ex:
+                return f"<?>  ({ex})", "?"
+
+        def walk(obj, depth=0):
+            indent = "  " * depth
+            try:
+                obj = pdf.get_object(obj.objgen) if hasattr(obj, 'objgen') else obj
+            except Exception:
+                pass
+
+            if isinstance(obj, pikepdf.Dictionary):
+                obj_type = str(obj.get("/Type", "")).lstrip("/")
+                if obj_type in ("StructTreeRoot", "StructElem"):
+                    label, stype = elem_label(obj)
+                    print(f"{indent}{label}")
+
+                    # בדיקות תקינות לכל element
+                    s_name = stype
+                    grouping = s_name in ("Document", "Sect", "Div", "Art", "Part",
+                                          "BlockQuote", "Caption", "TOC", "TOCI",
+                                          "Index", "NonStruct", "Private",
+                                          "Table", "L", "LI", "TR")
+                    k = obj.get("/K")
+                    alt = obj.get("/Alt")
+                    actual_text = obj.get("/ActualText")
+
+                    if alt and not isinstance(k, pikepdf.objects.Integer) and not isinstance(k, pikepdf.Array):
+                        # /Alt על grouping ללא MCID — "nested alt text" ב-Acrobat
+                        if isinstance(k, pikepdf.Dictionary) or k is None:
+                            if grouping:
+                                warnings.append(f"⚠ {s_name} יש /Alt על grouping element (עלול לגרום 'Nested alternate text')")
+
+                    if not grouping and alt is None and actual_text is None and k is not None:
+                        if isinstance(k, pikepdf.objects.Integer):
+                            warnings.append(f"⚠ {s_name} MCID={int(k)} — אין /Alt ולא /ActualText")
+
+                    # מעבר על ילדים
+                    if isinstance(k, pikepdf.Array):
+                        for child in k:
+                            walk(child, depth + 1)
+                    elif isinstance(k, pikepdf.Dictionary):
+                        walk(k, depth + 1)
+                    elif isinstance(k, pikepdf.objects.Integer):
+                        pass  # leaf: MCID ref — already shown in label
+                elif obj_type == "MCR":
+                    mcid = obj.get("/MCID", "?")
+                    print(f"{indent}  [MCR MCID={mcid}]")
+                elif obj_type == "OBJR":
+                    print(f"{indent}  [OBJR]")
+
+            elif isinstance(obj, pikepdf.Array):
+                for item in obj:
+                    walk(item, depth)
+
+        doc_k = str_root.get("/K")
+        if doc_k is not None:
+            walk(doc_k if not isinstance(doc_k, pikepdf.Array) else str_root, depth=0)
+        else:
+            walk(str_root, depth=0)
+
+        # ── 3. ParentTree ─────────────────────────────────────────
+        print("\n[PARENT-TREE]")
+        pt = str_root.get("/ParentTree")
+        if not pt:
+            errors.append("אין ParentTree ב-StructTreeRoot")
+        else:
+            nums = pt.get("/Nums", [])
+            i = 0
+            while i + 1 < len(nums):
+                page_idx = int(nums[i])
+                entry    = nums[i + 1]
+                is_array = isinstance(entry, pikepdf.Array)
+                length   = len(entry) if is_array else "direct-ref (שגוי!)"
+                status   = "✔" if is_array else "❌"
+                print(f"  {status} עמוד {page_idx}: {'Array['+str(length)+']' if is_array else str(length)}")
+                if not is_array:
+                    errors.append(f"ParentTree עמוד {page_idx} — ערך ישיר ולא Array (PDF spec §14.7.4.4)")
+                i += 2
+
+        # ── 4. MCIDs בזרמי תוכן ──────────────────────────────────
+        print("\n[CONTENT] MCIDs בזרמי תוכן (BDC markers):")
+        bdc_re = re.compile(rb'/(\w+)\s+<<[^>]*?/MCID\s+(\d+)')
+
+        for pg_num, page in enumerate(pdf.pages, 1):
+            try:
+                raw_obj = page.obj.get("/Contents")
+                if raw_obj is None:
+                    print(f"  עמוד {pg_num}: אין /Contents")
+                    continue
+
+                def get_bytes(o):
+                    if hasattr(o, "read_bytes"): return o.read_bytes()
+                    if isinstance(o, pikepdf.Array): return b"".join(get_bytes(x) for x in o)
+                    return b""
+
+                raw = get_bytes(raw_obj)
+                found = bdc_re.findall(raw)
+                struct_parents = page.obj.get("/StructParents")
+                sp_str = f" StructParents={int(struct_parents)}" if struct_parents is not None else " ⚠ אין StructParents"
+                if found:
+                    tags = ", ".join(f"{t.decode()}/MCID={m.decode()}" for t, m in found)
+                    print(f"  עמוד {pg_num}{sp_str}: {tags}")
+                else:
+                    print(f"  עמוד {pg_num}{sp_str}: ⚠ אין BDC markers — תוכן לא מתויג")
+                    warnings.append(f"עמוד {pg_num}: אין BDC markers בזרם התוכן")
+            except Exception as ex:
+                print(f"  עמוד {pg_num}: שגיאה — {ex}")
+
+    _report(errors, warnings)
+
+
+def _report(errors, warnings):
+    print(f"\n{'='*60}")
+    if warnings:
+        print("[WARN]")
+        for w in warnings:
+            print(f"   {w}")
+    if errors:
+        print("[ERRORS]")
+        for e in errors:
+            print(f"   {e}")
+        print(f"\nסיכום: {len(errors)} שגיאות, {len(warnings)} אזהרות")
+    else:
+        print(f"[OK] ההיררכיה תקינה ({len(warnings)} אזהרות)")
+    print('='*60)
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input",        required=True)
-    parser.add_argument("--output",       required=True)
+    parser.add_argument("--input",        default=None)
+    parser.add_argument("--output",       default=None)
+    parser.add_argument("--check-structure", metavar="PDF",
+                        help="בדוק היררכיית תוכן של PDF מעובד ויצא")
     parser.add_argument("--lang",         default="he-IL")
     parser.add_argument("--title",        default="\u05de\u05e1\u05de\u05da \u05e0\u05d2\u05d9\u05e9")
     parser.add_argument("--author",       default="")
@@ -842,6 +1043,14 @@ def main():
     parser.add_argument("--page-titles",  default=None)
     parser.add_argument("--tables-json",  default=None)
     args = parser.parse_args()
+
+    # מצב בדיקת היררכיה — לא צריך --input/--output
+    if args.check_structure:
+        check_structure(args.check_structure)
+        return
+
+    if not args.input or not args.output:
+        parser.error("--input ו-–output נדרשים (או השתמש ב-–check-structure)")
 
     ensure_deps()
 
