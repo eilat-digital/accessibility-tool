@@ -61,6 +61,12 @@
   }
   header h1 { color: white; font-size: 15px; font-weight: 500; }
   header span { color: rgba(255,255,255,.5); font-size: 13px; margin-right: auto; }
+  .logout-btn {
+    color: rgba(255,255,255,.7); font-size: 12px; text-decoration: none;
+    border: 1px solid rgba(255,255,255,.3); border-radius: 6px;
+    padding: 4px 12px; transition: all .2s;
+  }
+  .logout-btn:hover { background: rgba(255,255,255,.15); color: #fff; }
 
   /* Layout */
   main {
@@ -366,7 +372,8 @@
 <header>
   <div class="logo-mark">נג</div>
   <h1>מערכת הנגשת מסמכים</h1>
-  <span>עיריית אילת — מחלקה דיגיטלית</span>
+  <span>עיריית אילת — שימוש פנימי</span>
+  <a href="/logout" class="logout-btn">יציאה</a>
 </header>
 
 <main>

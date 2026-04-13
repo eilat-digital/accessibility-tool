@@ -6,7 +6,21 @@ import sqlite3
 import subprocess
 import threading
 import logging
+import secrets
+import hashlib
+
+# טעינת .env אם קיים (פיתוח מקומי)
+_env_path = os.path.join(os.path.dirname(__file__), ".env")
+if os.path.exists(_env_path):
+    with open(_env_path, encoding="utf-8") as _f:
+        for _line in _f:
+            _line = _line.strip()
+            if _line and not _line.startswith("#") and "=" in _line:
+                _k, _v = _line.split("=", 1)
+                if _v.strip():
+                    os.environ.setdefault(_k.strip(), _v.strip())
 from datetime import datetime, timedelta, timezone
+from functools import wraps
 
 # Israel Standard Time: UTC+2 winter, UTC+3 summer (IST/IDT)
 # Using fixed UTC+2 as a safe baseline; Railway server runs UTC.
@@ -16,7 +30,8 @@ def now_il():
     """Current datetime in Israel time."""
     return datetime.now(IL_TZ).replace(tzinfo=None)
 from pathlib import Path
-from flask import Flask, request, jsonify, send_file, render_template
+from flask import (Flask, request, jsonify, send_file, render_template,
+                   session, redirect, url_for, make_response)
 from flask_cors import CORS
 
 PYTHON = sys.executable
@@ -49,6 +64,26 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 200 * 1024 * 1024  # 200MB
+
+# -- Auth --
+# סיסמה מוגדרת ב-ACCESS_PASSWORD בקובץ .env / משתני סביבה.
+# ברירת מחדל לפיתוח בלבד — חובה לשנות בייצור!
+_RAW_PASSWORD = os.environ.get("ACCESS_PASSWORD", "eilat2026")
+ACCESS_PASSWORD_HASH = hashlib.sha256(_RAW_PASSWORD.encode()).hexdigest()
+app.secret_key = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
+
+def login_required(f):
+    """Decorator — מגן על כל route שדורש התחברות."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not session.get("logged_in"):
+            # API calls → 401 JSON; browser requests → redirect to login
+            if request.path.startswith("/api/"):
+                return jsonify({"error": "נדרשת התחברות"}), 401
+            return redirect(url_for("login", next=request.path))
+        return f(*args, **kwargs)
+    return decorated
+
 CORS(app, resources={r"/api/*": {"origins": "*"}})
 
 BASE_DIR = Path(__file__).parent
@@ -380,13 +415,40 @@ def process_pdf(job_id, input_path, output_path, original_name, file_size):
 
 
 # -- Routes --
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    error = None
+    if request.method == 'POST':
+        pwd = request.form.get('password', '')
+        if hashlib.sha256(pwd.encode()).hexdigest() == ACCESS_PASSWORD_HASH:
+            session.permanent = True
+            app.permanent_session_lifetime = timedelta(hours=12)
+            session['logged_in'] = True
+            logger.info("התחברות מוצלחת")
+            next_page = request.form.get('next') or '/'
+            return redirect(next_page)
+        error = 'סיסמה שגויה'
+        logger.warning("ניסיון התחברות כושל")
+
+    next_page = request.args.get('next', '/')
+    return render_template('login.html', error=error, next=next_page)
+
+
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect(url_for('login'))
+
+
 @app.route('/')
+@login_required
 def index():
     """Serve the main application interface"""
     logger.info("Serving index page")
     return render_template('index.html')
 
 @app.route('/api/upload', methods=['POST'])
+@login_required
 def upload():
     """Upload a PDF file for accessibility processing
     
@@ -477,6 +539,7 @@ def upload():
     return jsonify({'job_id': job_id})
 
 @app.route('/api/status/<job_id>')
+@login_required
 def status(job_id):
     """Get processing status and progress for a job
     
@@ -490,6 +553,7 @@ def status(job_id):
     return jsonify(job)
 
 @app.route('/api/document/<job_id>')
+@login_required
 def get_document(job_id):
     """Get detailed information about a processed document
     
@@ -515,6 +579,7 @@ def get_document(job_id):
     return jsonify(doc)
 
 @app.route('/api/download/<job_id>')
+@login_required
 def download(job_id):
     """Download the processed accessible PDF file
     
@@ -549,6 +614,7 @@ def download(job_id):
     )
 
 @app.route('/api/history')
+@login_required
 def history():
     """Get list of all documents with processing history
     
@@ -571,6 +637,7 @@ def history():
     return jsonify(docs)
 
 @app.route('/api/delete/<job_id>', methods=['DELETE'])
+@login_required
 def delete(job_id):
     """Delete a document and its processed output
     
@@ -595,6 +662,7 @@ def delete(job_id):
     return jsonify({'ok': True})
 
 @app.route('/api/validate/<job_id>')
+@login_required
 def validate(job_id):
     """Get accessibility validation report for a processed document
     
@@ -623,6 +691,7 @@ def validate(job_id):
     return jsonify(report)
 
 @app.route('/api/stats')
+@login_required
 def get_stats():
     """Get aggregate statistics about processed documents
     
