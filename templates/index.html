@@ -340,6 +340,31 @@
   .stat-card { animation: fadeIn 0.6s ease-out; }
   .card { animation: fadeIn 0.4s ease-out; }
 
+  /* Queue */
+  .queue-section { margin: 0 1.25rem 1.25rem; }
+  .queue-header {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 8px;
+  }
+  .queue-title { font-size: 13px; font-weight: 600; color: var(--gray-1); }
+  .queue-counter { font-size: 12px; color: var(--gray-3); }
+  .queue-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 9px 12px;
+    border: 1px solid var(--gray-4);
+    border-radius: 8px; margin-bottom: 5px;
+    background: var(--white); transition: all .2s;
+  }
+  .queue-item.qi-processing { border-color: var(--blue-l); background: var(--blue-s); }
+  .queue-item.qi-done       { border-color: #86EFAC;       background: var(--grn-s); }
+  .queue-item.qi-error      { border-color: #FCA5A5;       background: var(--red-s); }
+  .qi-icon { font-size: 15px; flex-shrink: 0; }
+  .qi-info { flex: 1; min-width: 0; }
+  .qi-name { font-size: 12px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .qi-status { font-size: 11px; color: var(--gray-3); margin-top: 2px; }
+  .qi-bar-wrap { height: 4px; background: var(--gray-4); border-radius: 99px; margin-top: 5px; }
+  .qi-bar { height: 100%; background: linear-gradient(90deg,var(--blue),var(--blue-l)); border-radius: 99px; width: 0%; transition: width .4s; }
+
   .btn, .btn-download, .btn-sm { transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1); }
   .btn:hover, .btn-download:hover, .btn-sm:hover { transform: translateY(-2px); box-shadow: var(--shadow-lg); }
   .btn:active, .btn-download:active, .btn-sm:active { transform: translateY(0); }
@@ -414,7 +439,7 @@
 
     <div class="drop-zone" id="drop-zone">
       <div class="drop-icon">📂</div>
-      <p><strong onclick="document.getElementById('file-input').click()">לחצו לבחירת קובץ</strong> או גררו לכאן</p>
+      <p><strong onclick="document.getElementById('file-input').click()">לחצו לבחירת קבצים</strong> או גררו לכאן</p>
       <div style="display:flex; gap:6px; flex-wrap:wrap; justify-content:center; margin: 8px 0;">
         <span style="background:#E8F0FB; color:#1A4E8A; font-size:11px; padding:3px 8px; border-radius:4px; font-weight:600;">PDF</span>
         <span style="background:#E8F0FB; color:#1A4E8A; font-size:11px; padding:3px 8px; border-radius:4px; font-weight:600;">Word (.docx)</span>
@@ -424,20 +449,16 @@
       </div>
       <small style="color:var(--gray-3)">עד 300 עמודים · עד 200MB</small>
       <div id="file-warning" style="display:none; margin-top:10px; padding:8px 12px; border-radius:6px; font-size:12px; text-align:right;"></div>
-      <input type="file" id="file-input" accept=".pdf,.docx,.doc,.pptx,.ppt,.xlsx,.xls,.eml,.msg">
+      <input type="file" id="file-input" accept=".pdf,.docx,.doc,.pptx,.ppt,.xlsx,.xls,.eml,.msg" multiple>
     </div>
 
-    <div class="processing-box" id="processing-box">
-      <div class="file-row">
-        <span class="file-icon">📄</span>
-        <span class="file-name" id="proc-filename">—</span>
-        <span class="file-status" id="proc-status">מעבד...</span>
+    <!-- Queue -->
+    <div class="queue-section" id="queue-section" style="display:none;">
+      <div class="queue-header">
+        <span class="queue-title">תור עיבוד</span>
+        <span class="queue-counter" id="queue-counter"></span>
       </div>
-      <div class="progress-wrap">
-        <div class="progress-bar" id="progress-bar"></div>
-      </div>
-      <div class="progress-label" id="progress-label">מתחיל עיבוד...</div>
-      <div class="progress-time" id="progress-time"></div>
+      <div id="queue-list"></div>
     </div>
 
     <div id="features-list" class="features-list">
@@ -504,180 +525,173 @@
 </main>
 
 <script>
-let currentJobId = null;
-let pollInterval = null;
 let allHistory = [];
-let currentStartTime = null;
 
-const dropZone = document.getElementById('drop-zone');
+// ── Queue state ───────────────────────────────────────────
+let queue = [];
+let queueSeq = 0;
+let isProcessing = false;
+
+const ALLOWED = ['.pdf','.docx','.doc','.pptx','.ppt','.xlsx','.xls','.eml','.msg'];
+const PROC_LABELS = {
+  5:'מתחיל עיבוד...',10:'טוען קובץ...',30:'בודק עמודים...',
+  50:'מנגיש תוכן...',90:'מוסיף תיוג PDF/UA...',100:'הושלם!'
+};
+
+const dropZone  = document.getElementById('drop-zone');
 const fileInput = document.getElementById('file-input');
 
 dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
 dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
 dropZone.addEventListener('drop', e => {
-  e.preventDefault();
-  dropZone.classList.remove('drag-over');
-  const file = e.dataTransfer.files[0];
-  if (file) uploadFile(file);
+  e.preventDefault(); dropZone.classList.remove('drag-over');
+  addFilesToQueue(e.dataTransfer.files);
 });
 fileInput.addEventListener('change', () => {
-  if (fileInput.files[0]) uploadFile(fileInput.files[0]);
+  addFilesToQueue(fileInput.files);
+  fileInput.value = '';
 });
 dropZone.addEventListener('click', e => { if (e.target.tagName !== 'STRONG') fileInput.click(); });
 
-function timeEstimate(sizeMB) {
-  // הערכת זמן גסה לפי גודל קובץ
-  if (sizeMB < 2)  return '30 שניות עד דקה';
-  if (sizeMB < 10) return '1–3 דקות';
-  if (sizeMB < 50) return '3–8 דקות';
-  return '10–20 דקות';
+// ── Queue management ──────────────────────────────────────
+function addFilesToQueue(files) {
+  let added = 0;
+  for (const file of files) {
+    const ext = file.name.slice(file.name.lastIndexOf('.')).toLowerCase();
+    if (!ALLOWED.includes(ext)) {
+      showFileWarning(`"${file.name}" — סוג קובץ לא נתמך`, 'error');
+      continue;
+    }
+    queue.push({ id: ++queueSeq, file, status: 'waiting', jobId: null, progress: 0, statusText: 'ממתין...' });
+    added++;
+  }
+  if (added) { renderQueue(); processNextInQueue(); }
 }
 
-// --- Upload ---
-async function uploadFile(file) {
-  const allowed = ['.pdf', '.docx', '.doc', '.pptx', '.ppt', '.xlsx', '.xls', '.eml', '.msg'];
-  const ext = file.name.slice(file.name.lastIndexOf('.')).toLowerCase();
-  if (!allowed.includes(ext)) {
-    showWarning('⚠️ סוג קובץ לא נתמך. ניתן להעלות: PDF, Word, PowerPoint, Excel, דוא"ל (.eml/.msg)', 'error');
-    return;
-  }
+function renderQueue() {
+  const section = document.getElementById('queue-section');
+  if (!queue.length) { section.style.display = 'none'; return; }
+  section.style.display = 'block';
+  const done = queue.filter(i => i.status === 'done').length;
+  document.getElementById('queue-counter').textContent = `${done} / ${queue.length} הושלמו`;
+  const list = document.getElementById('queue-list');
+  list.innerHTML = '';
+  queue.forEach(item => list.appendChild(buildQueueRow(item)));
+}
 
-  const sizeMB = file.size / (1024 * 1024);
-  const warn = document.getElementById('file-warning');
-  if (sizeMB > 20) {
-    showWarning(`⏱ קובץ גדול (${sizeMB.toFixed(1)}MB) — זמן עיבוד משוער: ${timeEstimate(sizeMB)}`, 'info');
-  } else {
-    warn.style.display = 'none';
-  }
+function buildQueueRow(item) {
+  const icons = { waiting:'🕐', processing:'⚙️', done:'✅', error:'❌' };
+  const div = document.createElement('div');
+  div.className = `queue-item qi-${item.status}`;
+  div.id = `qi-${item.id}`;
+  const isProc = item.status === 'processing';
+  const isDone = item.status === 'done';
+  const isErr  = item.status === 'error';
+  const statusColor = isErr ? 'color:var(--red)' : isDone ? 'color:var(--green)' : '';
+  div.innerHTML = `
+    <span class="qi-icon">${icons[item.status]}</span>
+    <div class="qi-info">
+      <div class="qi-name" title="${item.file.name}">${item.file.name}</div>
+      ${isProc ? `<div class="qi-bar-wrap"><div class="qi-bar" id="qbar-${item.id}" style="width:${item.progress}%"></div></div>` : ''}
+      <div class="qi-status" style="${statusColor}">${isProc ? (item.statusText||'מעבד...') : item.status==='waiting' ? 'ממתין...' : isDone ? 'הושלם בהצלחה' : (item.error||'שגיאה')}</div>
+    </div>
+    ${isDone ? `<button class="btn-sm primary" onclick="window.location='/api/download/${item.jobId}'">הורד</button>` : ''}
+    ${isErr  ? `<button class="btn-sm danger" onclick="removeQueueItem(${item.id})">הסר</button>` : ''}
+  `;
+  return div;
+}
 
-  dropZone.style.display = 'none';
-  const procBox = document.getElementById('processing-box');
-  procBox.style.display = 'block';
-  document.getElementById('proc-filename').textContent = file.name;
-  document.getElementById('proc-status').textContent = 'מעלה...';
-  document.getElementById('result-box').style.display = 'none';
-  document.getElementById('features-list').style.display = 'none';
-  setProgress(5, 'מעלה קובץ...', '');
+function patchQueueRow(item) {
+  const el = document.getElementById(`qi-${item.id}`);
+  if (!el) return;
+  const newEl = buildQueueRow(item);
+  el.replaceWith(newEl);
+  // update counter
+  const done = queue.filter(i => i.status === 'done').length;
+  document.getElementById('queue-counter').textContent = `${done} / ${queue.length} הושלמו`;
+}
 
-  currentStartTime = Date.now();
+function patchBar(item) {
+  const bar = document.getElementById(`qbar-${item.id}`);
+  if (bar) bar.style.width = item.progress + '%';
+  const statusEl = document.querySelector(`#qi-${item.id} .qi-status`);
+  if (statusEl) statusEl.textContent = item.statusText || 'מעבד...';
+}
 
-  const fd = new FormData();
-  fd.append('file', file);
+function removeQueueItem(id) {
+  queue = queue.filter(i => i.id !== id);
+  renderQueue();
+}
+
+// ── Sequential processor ──────────────────────────────────
+async function processNextInQueue() {
+  if (isProcessing) return;
+  const item = queue.find(i => i.status === 'waiting');
+  if (!item) return;
+  isProcessing = true;
+
+  item.status = 'processing'; item.progress = 5; item.statusText = 'מעלה...';
+  patchQueueRow(item);
 
   try {
-    const res = await fetch('/api/upload', { method: 'POST', body: fd });
+    const fd = new FormData();
+    fd.append('file', item.file);
+    const res = await fetch('/api/upload', { method:'POST', body:fd });
     const data = await res.json();
     if (data.error) throw new Error(data.error);
-    currentJobId = data.job_id;
-    pollStatus();
-  } catch (e) {
-    showError(e.message);
+    item.jobId = data.job_id;
+    await pollQueueItem(item);
+  } catch(e) {
+    item.status = 'error'; item.error = e.message;
+    patchQueueRow(item);
+    isProcessing = false;
+    processNextInQueue();
   }
 }
 
-function setProgress(pct, label, timeMsg) {
-  document.getElementById('progress-bar').style.width = pct + '%';
-  document.getElementById('progress-label').textContent = label;
-  if (timeMsg) document.getElementById('progress-time').textContent = timeMsg;
+function pollQueueItem(item) {
+  return new Promise(resolve => {
+    const iv = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/status/${item.jobId}`);
+        const data = await res.json();
+        const pct = data.progress || 5;
+        item.progress = pct;
+        item.statusText = PROC_LABELS[pct] || `${pct}%`;
+        patchBar(item);
+        if (data.status === 'done') {
+          clearInterval(iv);
+          item.status = 'done';
+          patchQueueRow(item);
+          loadHistory();
+          isProcessing = false;
+          processNextInQueue();
+          resolve();
+        } else if (data.status === 'error') {
+          clearInterval(iv);
+          item.status = 'error'; item.error = data.error || 'שגיאה בעיבוד';
+          patchQueueRow(item);
+          isProcessing = false;
+          processNextInQueue();
+          resolve();
+        }
+      } catch(e) {}
+    }, 1000);
+  });
 }
 
-const LABELS = {
-  5:  'מתחיל עיבוד...',
-  10: 'טוען קובץ...',
-  30: 'בודק עמודים...',
-  50: 'מנגיש תוכן...',
-  90: 'מוסיף תיוג PDF/UA...',
-  100: 'הושלם!'
-};
-
-function formatTime(seconds) {
-  if (seconds < 60) return `${Math.round(seconds)}s`;
-  const mins = Math.floor(seconds / 60);
-  const secs = Math.round(seconds % 60);
-  return `${mins}m ${secs}s`;
-}
-
-function pollStatus() {
-  if (pollInterval) clearInterval(pollInterval);
-  document.getElementById('proc-status').textContent = 'מעבד...';
-
-  pollInterval = setInterval(async () => {
-    try {
-      const res = await fetch(`/api/status/${currentJobId}`);
-      const data = await res.json();
-
-      const pct = data.progress || 5;
-      const label = LABELS[pct] || `${pct}%`;
-      const elapsed = (Date.now() - currentStartTime) / 1000;
-      const timeMsg = `⏱ זמן עבודה: ${formatTime(elapsed)}`;
-      setProgress(pct, label, timeMsg);
-
-      if (data.status === 'done') {
-        clearInterval(pollInterval);
-        showSuccess();
-        loadHistory();
-      } else if (data.status === 'error') {
-        clearInterval(pollInterval);
-        showError(data.error || 'שגיאה בעיבוד');
-      }
-    } catch(e) {}
-  }, 1000);
-}
-
-async function showSuccess() {
-  document.getElementById('processing-box').style.display = 'none';
-  document.getElementById('features-list').style.display = 'block';
-
-  const box = document.getElementById('result-box');
-  box.className = 'result-box success';
-  box.style.display = 'flex';
-  document.getElementById('result-icon').textContent = '✅';
-  document.getElementById('result-title').textContent = 'המסמך הונגש בהצלחה';
-  document.getElementById('result-sub').textContent = 'הקובץ עומד בתקן PDF/UA וIS 5568';
-
-  try {
-    const res = await fetch(`/api/validate/${currentJobId}`);
-    const validation = await res.json();
-    if (validation.score !== undefined) {
-      const score = Math.round(validation.score);
-      const scoreDisplay = document.getElementById('accessibility-score-display');
-      scoreDisplay.style.display = 'block';
-      document.getElementById('score-text').textContent = `${score}%`;
-      const scoreFill = document.getElementById('score-fill');
-      scoreFill.style.width = score + '%';
-      if (score >= 80) {
-        scoreFill.style.background = 'linear-gradient(90deg, var(--green), #84CC16)';
-        document.getElementById('score-text').style.color = 'var(--green)';
-      } else if (score >= 70) {
-        scoreFill.style.background = 'linear-gradient(90deg, #FBBF24, #F59E0B)';
-        document.getElementById('score-text').style.color = '#F59E0B';
-      } else {
-        scoreFill.style.background = 'linear-gradient(90deg, #FB7185, #F43F5E)';
-        document.getElementById('score-text').style.color = '#F43F5E';
-      }
-    }
-  } catch(e) {}
-
-  const btn = document.getElementById('btn-download');
-  btn.style.display = 'block';
-  btn.onclick = () => window.location = `/api/download/${currentJobId}`;
-
-  setTimeout(() => {
-    dropZone.style.display = 'block';
-    box.style.display = 'none';
-    document.getElementById('processing-box').style.display = 'none';
-    document.getElementById('features-list').style.display = 'none';
-    document.getElementById('accessibility-score-display').style.display = 'none';
-    setProgress(0, '', '');
-    fileInput.value = '';
-    currentJobId = null;
-  }, 6000);
+// ── Helpers ───────────────────────────────────────────────
+function showFileWarning(msg, type) {
+  const w = document.getElementById('file-warning');
+  w.textContent = msg;
+  w.style.display = 'block';
+  w.style.background = type === 'error' ? 'var(--red-s)' : '#FFFBEB';
+  w.style.color      = type === 'error' ? 'var(--red)'   : '#92400E';
+  w.style.border     = type === 'error' ? '1px solid #FCA5A5' : '1px solid #FCD34D';
+  setTimeout(() => { w.style.display = 'none'; }, 4000);
 }
 
 function showError(msg) {
-  document.getElementById('processing-box').style.display = 'none';
-  document.getElementById('features-list').style.display = 'none';
-  dropZone.style.display = 'block';
   const box = document.getElementById('result-box');
   box.className = 'result-box error';
   box.style.display = 'flex';
