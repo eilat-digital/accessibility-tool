@@ -420,10 +420,11 @@
         <span style="background:#E8F0FB; color:#1A4E8A; font-size:11px; padding:3px 8px; border-radius:4px; font-weight:600;">Word (.docx)</span>
         <span style="background:#E8F0FB; color:#1A4E8A; font-size:11px; padding:3px 8px; border-radius:4px; font-weight:600;">PowerPoint (.pptx)</span>
         <span style="background:#E8F0FB; color:#1A4E8A; font-size:11px; padding:3px 8px; border-radius:4px; font-weight:600;">Excel (.xlsx)</span>
+        <span style="background:#FFF0E8; color:#B45309; font-size:11px; padding:3px 8px; border-radius:4px; font-weight:600;">דוא"ל (.eml/.msg)</span>
       </div>
       <small style="color:var(--gray-3)">עד 300 עמודים · עד 200MB</small>
       <div id="file-warning" style="display:none; margin-top:10px; padding:8px 12px; border-radius:6px; font-size:12px; text-align:right;"></div>
-      <input type="file" id="file-input" accept=".pdf,.docx,.doc,.pptx,.ppt,.xlsx,.xls">
+      <input type="file" id="file-input" accept=".pdf,.docx,.doc,.pptx,.ppt,.xlsx,.xls,.eml,.msg">
     </div>
 
     <div class="processing-box" id="processing-box">
@@ -534,10 +535,10 @@ function timeEstimate(sizeMB) {
 
 // --- Upload ---
 async function uploadFile(file) {
-  const allowed = ['.pdf', '.docx', '.doc', '.pptx', '.ppt'];
+  const allowed = ['.pdf', '.docx', '.doc', '.pptx', '.ppt', '.xlsx', '.xls', '.eml', '.msg'];
   const ext = file.name.slice(file.name.lastIndexOf('.')).toLowerCase();
   if (!allowed.includes(ext)) {
-    showWarning('⚠️ סוג קובץ לא נתמך. ניתן להעלות: PDF, Word, PowerPoint', 'error');
+    showWarning('⚠️ סוג קובץ לא נתמך. ניתן להעלות: PDF, Word, PowerPoint, Excel, דוא"ל (.eml/.msg)', 'error');
     return;
   }
 

@@ -163,10 +163,12 @@ ALLOWED_EXTENSIONS = {
     '.ppt':  'PowerPoint (ישן)',
     '.xlsx': 'Excel',
     '.xls':  'Excel (ישן)',
+    '.eml':  'דוא"ל (EML)',
+    '.msg':  'דוא"ל (Outlook)',
 }
 
 def convert_to_pdf(input_path: Path, work_dir: Path) -> Path:
-    """המרת Word/PowerPoint ל-PDF באמצעות LibreOffice headless."""
+    """המרת Word/PowerPoint/אימייל ל-PDF באמצעות LibreOffice headless."""
     import shutil
     lo = shutil.which('libreoffice') or shutil.which('soffice')
     if not lo:
@@ -182,6 +184,142 @@ def convert_to_pdf(input_path: Path, work_dir: Path) -> Path:
         raise Exception('ההמרה הסתיימה אך קובץ PDF לא נמצא')
     logger.info(f"Converted {input_path.suffix} → PDF: {pdf_path}")
     return pdf_path
+
+
+def _email_to_html(subject: str, from_addr: str, to_addr: str, date_str: str, body_html: str) -> str:
+    """בניית HTML מנתוני אימייל — תמיכה ב-RTL/עברית."""
+    import html as _h
+    return f"""<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<style>
+  body  {{ font-family: Arial, 'David', sans-serif; margin: 30px; direction: rtl; color: #222; }}
+  .hdr  {{ background: #f0f4fa; padding: 18px 20px; border-radius: 8px;
+           margin-bottom: 24px; border: 1px solid #c8d8f0; }}
+  .subj {{ font-size: 20px; font-weight: bold; color: #1A4E8A; margin-bottom: 12px; }}
+  .meta td {{ padding: 3px 6px; font-size: 13px; }}
+  .meta .lbl {{ font-weight: bold; color: #555; white-space: nowrap; }}
+  .body {{ line-height: 1.7; font-size: 14px; }}
+  pre   {{ white-space: pre-wrap; word-break: break-word; }}
+</style>
+</head>
+<body>
+<div class="hdr">
+  <div class="subj">{_h.escape(subject)}</div>
+  <table class="meta">
+    <tr><td class="lbl">מאת:</td><td>{_h.escape(from_addr)}</td></tr>
+    <tr><td class="lbl">אל:</td><td>{_h.escape(to_addr)}</td></tr>
+    <tr><td class="lbl">תאריך:</td><td>{_h.escape(date_str)}</td></tr>
+  </table>
+</div>
+<div class="body">{body_html}</div>
+</body>
+</html>"""
+
+
+def convert_email_to_pdf(input_path: Path, work_dir: Path) -> Path:
+    """המרת קובץ דוא"ל (.eml / .msg) ל-PDF עם שמירה על תוכן ועיצוב."""
+    import html as _h
+    ext = input_path.suffix.lower()
+    html_content = None
+    subject = 'הודעת דוא"ל'
+
+    # ── .eml — סטנדרט RFC 2822 (כל לקוחות האימייל) ─────────────
+    if ext == '.eml':
+        import email as _email
+        from email.header import decode_header as _dh
+
+        def _decode_header(raw):
+            parts = []
+            for chunk, charset in _dh(raw or ''):
+                if isinstance(chunk, bytes):
+                    parts.append(chunk.decode(charset or 'utf-8', errors='replace'))
+                else:
+                    parts.append(chunk)
+            return ''.join(parts)
+
+        with open(input_path, 'rb') as f:
+            msg = _email.message_from_binary_file(f)
+
+        subject  = _decode_header(msg.get('Subject', 'ללא נושא'))
+        from_addr = _decode_header(msg.get('From', ''))
+        to_addr   = _decode_header(msg.get('To', ''))
+        date_str  = msg.get('Date', '')
+
+        body_html = None
+        body_text = None
+        for part in (msg.walk() if msg.is_multipart() else [msg]):
+            ctype = part.get_content_type()
+            charset = part.get_content_charset() or 'utf-8'
+            try:
+                payload = part.get_payload(decode=True)
+                if payload is None:
+                    continue
+                decoded = payload.decode(charset, errors='replace')
+                if ctype == 'text/html' and body_html is None:
+                    body_html = decoded
+                elif ctype == 'text/plain' and body_text is None:
+                    body_text = decoded
+            except Exception:
+                pass
+
+        body = body_html or (
+            f'<pre>{_h.escape(body_text)}</pre>' if body_text else '<p>הודעה ריקה</p>'
+        )
+        html_content = _email_to_html(subject, from_addr, to_addr, date_str, body)
+
+    # ── .msg — פורמט Outlook ─────────────────────────────────────
+    elif ext == '.msg':
+        try:
+            import extract_msg
+            msg = extract_msg.Message(str(input_path))
+            subject   = msg.subject   or 'ללא נושא'
+            from_addr = msg.sender    or ''
+            to_addr   = msg.to        or ''
+            date_str  = str(msg.date) if msg.date else ''
+
+            body_html = msg.htmlBody
+            body_text = msg.body
+            if isinstance(body_html, bytes):
+                body_html = body_html.decode('utf-8', errors='replace')
+            if isinstance(body_text, bytes):
+                body_text = body_text.decode('utf-8', errors='replace')
+
+            body = body_html or (
+                f'<pre>{_h.escape(body_text)}</pre>' if body_text else '<p>הודעה ריקה</p>'
+            )
+            html_content = _email_to_html(subject, from_addr, to_addr, date_str, body)
+        except ImportError:
+            logger.warning("extract-msg לא מותקן — מנסה LibreOffice ישירות עבור .msg")
+            # Fallback: LibreOffice יכול לפתוח .msg ישירות
+            return convert_to_pdf(input_path, work_dir)
+        except Exception as e:
+            logger.warning(f"extract-msg נכשל ({e}) — מנסה LibreOffice")
+            return convert_to_pdf(input_path, work_dir)
+
+    if html_content is None:
+        raise Exception(f'לא ניתן להמיר קובץ מסוג {ext}')
+
+    # ── המרת HTML → PDF דרך LibreOffice ─────────────────────────
+    import shutil
+    html_path = work_dir / (input_path.stem + '_email.html')
+    html_path.write_text(html_content, encoding='utf-8')
+
+    lo = shutil.which('libreoffice') or shutil.which('soffice')
+    if not lo:
+        raise Exception('LibreOffice אינו מותקן — לא ניתן להמיר את האימייל')
+
+    result = subprocess.run(
+        [lo, '--headless', '--convert-to', 'pdf', '--outdir', str(work_dir), str(html_path)],
+        capture_output=True, text=True, timeout=180
+    )
+    pdf_path = work_dir / (input_path.stem + '_email.pdf')
+    if pdf_path.exists():
+        logger.info(f"Email converted → PDF: {subject!r}")
+        return pdf_path
+
+    raise Exception(f'שגיאה בהמרת האימייל ל-PDF: {result.stderr or result.stdout}')
 
 
 def validate_pdf_accessibility(pdf_path):
@@ -486,16 +624,20 @@ def upload():
         logger.info(f"Large file upload: {file.filename} ({file_size/(1024*1024):.1f}MB) - will use optimized settings")
 
     job_id = str(uuid.uuid4())
-    input_path = UPLOAD_DIR / f"{job_id}_input.pdf"
+    # שמירה עם הסיומת המקורית כדי ש-LibreOffice/extract-msg ידעו את הפורמט
+    input_path = UPLOAD_DIR / f"{job_id}_input{ext}"
     output_path = OUTPUT_DIR / f"{job_id}_accessible.pdf"
 
     file.save(input_path)
 
-    # המרה ל-PDF אם נדרש (Word / PowerPoint)
+    # המרה ל-PDF אם נדרש
     if ext != '.pdf':
         try:
             logger.info(f"Converting {ext} to PDF for job {job_id}")
-            converted = convert_to_pdf(input_path, UPLOAD_DIR)
+            if ext in ('.eml', '.msg'):
+                converted = convert_email_to_pdf(input_path, UPLOAD_DIR)
+            else:
+                converted = convert_to_pdf(input_path, UPLOAD_DIR)
             input_path.unlink(missing_ok=True)
             input_path = converted
         except Exception as conv_err:
