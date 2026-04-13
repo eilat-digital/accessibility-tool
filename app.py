@@ -136,6 +136,12 @@ def init_db():
         """)
         
         conn.commit()
+        # Migration: add structure_json column if it doesn't exist yet
+        try:
+            conn.execute("ALTER TABLE documents ADD COLUMN structure_json TEXT")
+            conn.commit()
+        except Exception:
+            pass   # column already exists
     logger.info("Database initialized")
 
 init_db()
@@ -535,6 +541,13 @@ def process_pdf(job_id, input_path, output_path, original_name, file_size):
         jobs[job_id] = {'status': 'done', 'progress': 100, 'score': validation_report['score']}
         log_operation(job_id, 'complete', 'success', f'Time: {processing_time:.1f}s, Score: {validation_report["score"]}')
         logger.info(f"Successfully completed job {job_id} with accessibility score {validation_report['score']}")
+
+        # Background: extract semantic structure for Review UI
+        threading.Thread(
+            target=_extract_and_store_structure,
+            args=(job_id, str(output_path)),
+            daemon=True,
+        ).start()
 
     except Exception as e:
         logger.error(f"Error processing job {job_id}: {str(e)}")
@@ -978,6 +991,188 @@ def api_docs():
     </html>
     """
     return docs_html, 200, {'Content-Type': 'text/html; charset=utf-8'}
+
+# ── Structure Review API ──────────────────────────────────────────────────
+
+def _pipeline_extract_structure(pdf_path: str) -> list:
+    """
+    Run the pipeline on a PDF and return a serialisable structure list.
+    Works for born-digital PDFs; returns [] for image-only files.
+    """
+    try:
+        import sys as _sys
+        _scripts = os.path.join(os.path.dirname(__file__), "scripts")
+        if _scripts not in _sys.path:
+            _sys.path.insert(0, _scripts)
+        from pipeline import extract_blocks, extract_lines, StructureDetector
+    except ImportError:
+        return []
+
+    blocks  = extract_blocks(pdf_path)
+    lines   = extract_lines(pdf_path)
+    elements = StructureDetector().detect(blocks, graphic_lines=lines or None)
+
+    def _ser(e):
+        d = {"type": e.elem_type, "text": e.text, "page": e.page_num}
+        if e.attrs:
+            d["attrs"] = dict(e.attrs)
+        if e.children:
+            d["children"] = [_ser(c) for c in e.children]
+        return d
+
+    return [_ser(e) for e in elements]
+
+
+def _deserialize_structure(data: list):
+    """Convert JSON list back to List[StructElement]."""
+    try:
+        import sys as _sys
+        _scripts = os.path.join(os.path.dirname(__file__), "scripts")
+        if _scripts not in _sys.path:
+            _sys.path.insert(0, _scripts)
+        from pipeline.models import StructElement
+    except ImportError:
+        return []
+
+    def _de(d):
+        children = [_de(c) for c in d.get("children", [])]
+        return StructElement(
+            elem_type=d.get("type", "P"),
+            text=d.get("text", ""),
+            children=children,
+            attrs=d.get("attrs", {}),
+            page_num=d.get("page", 0),
+        )
+
+    return [_de(d) for d in data]
+
+
+def _extract_and_store_structure(job_id: str, output_path: str):
+    """Background task: extract structure from processed PDF and store in DB."""
+    try:
+        struct = _pipeline_extract_structure(output_path)
+        if struct:
+            with get_db() as conn:
+                conn.execute(
+                    "UPDATE documents SET structure_json=? WHERE id=?",
+                    (json.dumps(struct, ensure_ascii=False), job_id),
+                )
+                conn.commit()
+            logger.info(f"Structure stored for {job_id}: {len(struct)} elements")
+    except Exception as exc:
+        logger.warning(f"Structure extraction failed for {job_id}: {exc}")
+
+
+def _reexport_with_structure(job_id: str, pdf_path: str, struct_data: list,
+                              title: str = "מסמך נגיש", lang: str = "he-IL"):
+    """Re-inject corrected tag tree into existing PDF, in-place."""
+    try:
+        import pikepdf, shutil, sys as _sys
+        _scripts = os.path.join(os.path.dirname(__file__), "scripts")
+        if _scripts not in _sys.path:
+            _sys.path.insert(0, _scripts)
+        from pipeline import inject_digital, build_bookmarks
+
+        elements = _deserialize_structure(struct_data)
+        tmp = pdf_path + ".review_tmp"
+        shutil.copy2(pdf_path, tmp)
+
+        with pikepdf.open(tmp, allow_overwriting_input=True) as pdf:
+            inject_digital(pdf, elements, lang=lang, title=title,
+                           author="עיריית אילת")
+            heading_elems = [e for e in elements
+                             if e.elem_type in ("H1", "H2", "H3")]
+            build_bookmarks(pdf, heading_elems, {})
+            pdf.save(tmp)
+
+        shutil.move(tmp, pdf_path)
+        logger.info(f"Re-exported {job_id}: {len(elements)} elements")
+
+        with get_db() as conn:
+            conn.execute(
+                "UPDATE documents SET updated_at=? WHERE id=?",
+                (now_il().isoformat(), job_id),
+            )
+            conn.commit()
+    except Exception as exc:
+        logger.error(f"Re-export failed for {job_id}: {exc}")
+
+
+@app.route("/api/structure/<job_id>", methods=["GET"])
+@login_required
+def get_structure(job_id):
+    """Return the detected semantic structure of a completed document."""
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT status, structure_json, output_path FROM documents WHERE id=?",
+            (job_id,),
+        ).fetchone()
+
+    if not row:
+        return jsonify({"error": "לא נמצא"}), 404
+    if row["status"] != "done":
+        return jsonify({"error": "המסמך עדיין בעיבוד"}), 409
+
+    # Lazy extraction: if not stored yet, run now
+    if not row["structure_json"] and row["output_path"]:
+        struct = _pipeline_extract_structure(row["output_path"])
+        if struct:
+            with get_db() as conn:
+                conn.execute(
+                    "UPDATE documents SET structure_json=? WHERE id=?",
+                    (json.dumps(struct, ensure_ascii=False), job_id),
+                )
+                conn.commit()
+            return jsonify({"structure": struct})
+        return jsonify({"structure": [], "note": "PDF סרוק — אין מבנה טקסטואלי"})
+
+    struct = json.loads(row["structure_json"]) if row["structure_json"] else []
+    return jsonify({"structure": struct})
+
+
+@app.route("/api/structure/<job_id>", methods=["PUT"])
+@login_required
+def save_structure(job_id):
+    """Accept corrected structure JSON, store it, and trigger async re-export."""
+    body = request.get_json(silent=True)
+    if not body or "structure" not in body:
+        return jsonify({"error": "מבנה לא תקין"}), 400
+
+    struct_data = body["structure"]
+
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT output_path, original_name FROM documents WHERE id=?",
+            (job_id,),
+        ).fetchone()
+
+    if not row:
+        return jsonify({"error": "לא נמצא"}), 404
+
+    # Persist updated structure
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE documents SET structure_json=? WHERE id=?",
+            (json.dumps(struct_data, ensure_ascii=False), job_id),
+        )
+        conn.commit()
+
+    # Async re-export if file exists
+    output_path = row["output_path"]
+    if output_path and Path(output_path).exists():
+        title = Path(row["original_name"]).stem.replace("-", " ").replace("_", " ")
+        t = threading.Thread(
+            target=_reexport_with_structure,
+            args=(job_id, output_path, struct_data, title),
+            daemon=True,
+        )
+        t.start()
+        return jsonify({"ok": True, "reexporting": True,
+                        "message": "המבנה נשמר ועיבוד מחדש התחיל"})
+
+    return jsonify({"ok": True, "reexporting": False,
+                    "message": "המבנה נשמר (קובץ לא נמצא לעיבוד מחדש)"})
+
 
 if __name__ == '__main__':
     logger.info("Starting accessibility tool server")

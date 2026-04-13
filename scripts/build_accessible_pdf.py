@@ -49,9 +49,21 @@ def find_embedded_font():
     return None
 
 
+def _poppler_path():
+    """מחזיר נתיב Poppler מ-POPPLER_PATH ב-.env או None (ברירת מחדל: PATH)."""
+    p = os.environ.get("POPPLER_PATH", "")
+    if not p:
+        return None
+    # נתיב יחסי → מוחלט ביחס לשורש הפרויקט (תיקיית האב של scripts/)
+    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    full = os.path.join(base, p) if not os.path.isabs(p) else p
+    return full if os.path.isdir(full) else None
+
+
 def extract_pages(input_pdf, pages_dir, dpi=200, batch_size=20):
     from pdf2image import convert_from_path, pdfinfo_from_path
-    print(f"מחלץ עמודים ({dpi} DPI)...")
+    poppler = _poppler_path()
+    print(f"מחלץ עמודים ({dpi} DPI)..." + (f" [Poppler: {poppler}]" if poppler else ""))
     try:
         total_pages = pdfinfo_from_path(input_pdf)["Pages"]
     except Exception:
@@ -61,19 +73,18 @@ def extract_pages(input_pdf, pages_dir, dpi=200, batch_size=20):
     if total_pages:
         for start in range(1, total_pages + 1, batch_size):
             end = min(start + batch_size - 1, total_pages)
-            batch = convert_from_path(
-                input_pdf, dpi=dpi,
-                first_page=start, last_page=end,
-                thread_count=1
-            )
+            kw = dict(dpi=dpi, first_page=start, last_page=end, thread_count=1)
+            if poppler: kw["poppler_path"] = poppler
+            batch = convert_from_path(input_pdf, **kw)
             for i, img in enumerate(batch, start):
                 p = os.path.join(pages_dir, f"page_{i:04d}.jpg")
                 img.save(p, "JPEG", quality=85)
                 paths.append(p)
             del batch  # free memory before next batch
     else:
-        # fallback for PDFs where page count can't be determined
-        batch = convert_from_path(input_pdf, dpi=dpi, thread_count=1)
+        kw = dict(dpi=dpi, thread_count=1)
+        if poppler: kw["poppler_path"] = poppler
+        batch = convert_from_path(input_pdf, **kw)
         for i, img in enumerate(batch, 1):
             p = os.path.join(pages_dir, f"page_{i:04d}.jpg")
             img.save(p, "JPEG", quality=85)
@@ -87,6 +98,10 @@ def run_ocr(page_paths, lang_code="he-IL"):
     try:
         import pytesseract
         from PIL import Image
+        # נתיב Tesseract מותאם אישית (Windows on-premises)
+        tess_cmd = os.environ.get("TESSERACT_CMD", "")
+        if tess_cmd and os.path.isfile(tess_cmd):
+            pytesseract.pytesseract.tesseract_cmd = tess_cmd
         pytesseract.get_tesseract_version()  # verify binary exists
     except ImportError:
         print("  OCR: pytesseract לא מותקן — ללא שכבת טקסט (WCAG 1.4.5 יכשל)")
@@ -246,6 +261,40 @@ def apply_stamp_to_pdf(pdf_path):
             os.remove(tmp)
 
 
+_AI_STRUCTURE_PROMPT = """\
+This is a page from a Hebrew document (RTL). Analyze its structure and return a JSON array.
+
+CRITICAL — TABLE DETECTION:
+- If you see ANY grid with lines/borders (even partial), treat it as a table.
+- Each row of the table → one {"type":"tr"} element.
+- Header row (bold text, top row, or row with column titles) → cells with "type":"th".
+- Data rows → cells with "type":"td".
+- For multi-line cell content: join all lines of that cell into one "text" string.
+- For merged/spanning cells: repeat the text across the spanned columns.
+- In RTL Hebrew tables: first cell in each row = rightmost column.
+- A table with only one visible column still needs "tr"+"td" (not "p").
+- NEVER return table content as "p" or "li" elements.
+
+ELEMENT TYPES (use exactly these):
+  {"type":"h1","text":"..."} — main page/document title (largest text)
+  {"type":"h2","text":"..."} — section heading
+  {"type":"h3","text":"..."} — sub-heading
+  {"type":"p","text":"..."}  — paragraph
+  {"type":"li","text":"..."} — list item (numbered or bulleted)
+  {"type":"caption","text":"..."} — figure/table caption
+  {"type":"tr","cells":[{"type":"th"|"td","text":"..."},...]} — table row
+
+RULES:
+- Output reading order: top → bottom, right → left (Hebrew RTL).
+- Numbered items (1. 2. א. ב.) → "li", NOT "p".
+- Do NOT wrap table rows inside "p".
+- Return ONLY the JSON array, no explanation, no markdown.
+
+OCR text from this page (use for text accuracy):
+{ocr_text}
+"""
+
+
 def analyze_structure_with_ai(page_paths, page_texts, lang_code="he-IL"):
     """Use Claude Haiku to analyze document structure per page (WCAG 1.3.1).
     Returns {page_num: [{type, text} | {type:'tr', cells:[{type,text}]}]}.
@@ -266,36 +315,34 @@ def analyze_structure_with_ai(page_paths, page_texts, lang_code="he-IL"):
     for i, path in enumerate(page_paths, 1):
         try:
             img = PILImage.open(path)
-            img.thumbnail((1024, 1024))
+            img.thumbnail((1280, 1280))   # larger → better table cell reading
             buf = io.BytesIO()
-            img.save(buf, "JPEG", quality=80)
+            img.save(buf, "JPEG", quality=85)
             data = base64.standard_b64encode(buf.getvalue()).decode()
-            ocr_text = page_texts.get(i, "")[:3000]
+            ocr_text = page_texts.get(i, "")[:4000]
+
+            prompt = _AI_STRUCTURE_PROMPT.format(ocr_text=ocr_text or "(no OCR text)")
 
             resp = client.messages.create(
                 model="claude-haiku-4-5-20251001",
-                max_tokens=1500,
+                max_tokens=3000,
                 messages=[{"role": "user", "content": [
                     {"type": "image",
                      "source": {"type": "base64", "media_type": "image/jpeg", "data": data}},
-                    {"type": "text", "text": (
-                        f"Analyze the document structure of this page.\n"
-                        f"OCR text: {ocr_text}\n\n"
-                        "Return ONLY a JSON array with elements in reading order.\n"
-                        "Simple elements: {\"type\":\"h1\"|\"h2\"|\"h3\"|\"p\"|\"li\"|\"caption\", \"text\":\"...\"}\n"
-                        "Table row: {\"type\":\"tr\", \"cells\":[{\"type\":\"th\"|\"td\", \"text\":\"...\"}]}\n"
-                        "Use h1 for main title, h2 for section headings, h3 for sub-headings, "
-                        "p for paragraphs, li for list items.\n"
-                        "Return ONLY the JSON array."
-                    )}
+                    {"type": "text", "text": prompt},
                 ]}]
             )
             text = resp.content[0].text.strip()
             match = re.search(r'\[.*\]', text, re.DOTALL)
             if match:
                 elements = json.loads(match.group())
+                # Count element types for diagnostic
+                trs = sum(1 for e in elements if e.get("type") == "tr")
                 structures[i] = elements
-                print(f"  AI מבנה עמוד {i}: {len(elements)} אלמנטים ✓")
+                print(f"  AI מבנה עמוד {i}: {len(elements)} אלמנטים"
+                      f" (טבלה: {trs} שורות) ✓")
+            else:
+                print(f"  AI עמוד {i}: לא נמצא JSON בתשובה")
         except Exception as e:
             print(f"  AI מבנה עמוד {i}: {e}")
 
@@ -593,26 +640,111 @@ def fix_standard_font_encoding(pdf):
 
 
 def add_metadata_only(input_pdf, output_pdf, lang="he-IL", title="מסמך נגיש", author=""):
-    """For digital PDFs: only add PDF/UA metadata — never touch StructTreeRoot or content streams."""
+    """Thin wrapper kept for backwards compat — calls process_digital_pdf."""
+    process_digital_pdf(input_pdf, output_pdf, lang=lang, title=title, author=author)
+
+
+def process_digital_pdf(input_pdf, output_pdf, lang="he-IL",
+                         title="מסמך נגיש", author="",
+                         ai_descriptions=None, page_structures=None):
+    """
+    Full pipeline for born-digital PDFs (text already in content streams).
+
+    Steps:
+      1. Extract positioned text blocks (pdfminer)
+      2. Detect headings / lists / tables (rule-based)
+      3. Merge AI structure if available (Claude Haiku)
+      4. Inject PDF/UA-1 StructTreeRoot with semantic elements
+      5. Fix font encoding + set metadata
+      6. Write output
+
+    The original content streams are NEVER modified — we add structure
+    via ActualText on StructElements rather than BDC/MCID wiring.
+    This avoids MCID conflicts with any markers already in the PDF.
+    """
+    import pikepdf
+    import shutil
+
+    # --- Import pipeline (scripts/pipeline/ lives next to this file) ---
+    try:
+        import sys, os as _os
+        _scripts_dir = _os.path.dirname(_os.path.abspath(__file__))
+        if _scripts_dir not in sys.path:
+            sys.path.insert(0, _scripts_dir)
+        from pipeline import (
+            extract_blocks, extract_lines, StructureDetector,
+            merge_ai_structure, inject_digital, build_bookmarks,
+            StructValidator,
+        )
+        _pipeline_ok = True
+    except ImportError as _e:
+        print(f"  pipeline import: {_e} — fallback to metadata-only")
+        _pipeline_ok = False
+
+    if not _pipeline_ok:
+        _add_metadata_only_impl(input_pdf, output_pdf, lang, title, author)
+        return
+
+    print("  מנתח מבנה מסמך (pipeline)...")
+    blocks = extract_blocks(input_pdf)
+    print(f"  חולצו {len(blocks)} בלוקי טקסט מ-{input_pdf}")
+
+    # Extract graphic lines for border-based table detection
+    g_lines = extract_lines(input_pdf)
+    h_lines = sum(1 for l in g_lines if l.is_horizontal)
+    v_lines = sum(1 for l in g_lines if l.is_vertical)
+    if g_lines:
+        print(f"  זוהו {len(g_lines)} קווים גרפיים "
+              f"(אופקי: {h_lines}, אנכי: {v_lines}) — גילוי טבלאות לפי גבולות")
+
+    elements = StructureDetector().detect(blocks, graphic_lines=g_lines or None)
+    tbl_count = sum(1 for e in elements if e.elem_type == "Table")
+    print(f"  זוהו {len(elements)} אלמנטים "
+          f"(טבלאות: {tbl_count})")
+
+    # Merge AI structure where rule-based found no semantics
+    if page_structures:
+        elements = merge_ai_structure(elements, page_structures, lang=lang)
+        print(f"  לאחר מיזוג AI: {len(elements)} אלמנטים")
+
+    # Pre-export validation
+    sv = StructValidator()
+    pre_result = sv.validate(elements, lang=lang, title=title)
+    print(f"  ציון מבנה מקדים: {pre_result.score}/100 ({pre_result.status})")
+    for w in pre_result.warnings:
+        print(f"  ⚠ {w}")
+
+    # Inject tag tree
+    shutil.copy2(input_pdf, output_pdf)
+    with pikepdf.open(output_pdf, allow_overwriting_input=True) as pdf:
+        fix_standard_font_encoding(pdf)
+        inject_digital(pdf, elements, lang=lang, title=title, author=author)
+        # Bookmarks from headings
+        heading_elems = [e for e in elements
+                         if e.elem_type in ("H1", "H2", "H3")]
+        build_bookmarks(pdf, heading_elems, page_texts={})
+        pdf.save(output_pdf)
+
+    print(f"✅ PDF נגיש (pipeline): {output_pdf}")
+
+
+def _add_metadata_only_impl(input_pdf, output_pdf, lang, title, author):
+    """Legacy: metadata only, no structure detection."""
     import pikepdf
     from pikepdf import Dictionary, Name, String
 
     pdf = pikepdf.open(input_pdf)
-
     fix_standard_font_encoding(pdf)
-
     pdf.Root["/Lang"] = String(lang)
     pdf.Root["/ViewerPreferences"] = pdf.make_indirect(Dictionary(
         Direction=Name("/R2L"),
         DisplayDocTitle=pikepdf.objects.Boolean(True),
     ))
-
     with pdf.open_metadata() as meta:
         meta["dc:title"] = title
         meta["dc:language"] = lang
         if author:
             meta["dc:creator"] = [author]
-        # PDF/UA-1 identifier — ISO 14289-1 §6.2 (required for IS 5568 compliance)
         try:
             meta["pdfuaid:part"] = "1"
         except Exception:
@@ -621,7 +753,6 @@ def add_metadata_only(input_pdf, output_pdf, lang="he-IL", title="מסמך נג�
             meta["pdfuaid:amd"] = "2012"
         except Exception:
             pass
-
     try:
         if "/Info" not in pdf.trailer:
             pdf.trailer["/Info"] = pdf.make_indirect(Dictionary())
@@ -630,15 +761,12 @@ def add_metadata_only(input_pdf, output_pdf, lang="he-IL", title="מסמך נג�
             pdf.trailer["/Info"]["/Author"] = String(author)
     except Exception:
         pass
-
     if "/MarkInfo" not in pdf.Root:
         pdf.Root["/MarkInfo"] = pdf.make_indirect(
             Dictionary(Marked=pikepdf.objects.Boolean(True))
         )
-
     for page in pdf.pages:
         page.obj["/Tabs"] = Name("/S")
-
     pdf.save(output_pdf)
     print(f"✅ PDF נגיש (metadata): {output_pdf}")
 
@@ -1102,11 +1230,29 @@ def main():
             build_image_pdf(page_paths, page_texts, base_pdf, stamp=args.stamp)
 
         if pdf_type == 'digital':
-            # Digital PDFs already have a StructTreeRoot with MCIDs in content streams.
-            # Replacing it breaks the MCID→struct mapping → 2984+ Content failures in PAC.
-            # Only add PDF/UA metadata (XMP, Lang, ViewerPreferences) — leave structure intact.
-            add_metadata_only(base_pdf, args.output, lang=args.lang, title=args.title,
-                              author=args.author)
+            # WCAG 1.4.5: preserve original text layer.
+            # Pipeline: extract blocks → detect headings/lists/tables → inject semantic StructTreeRoot.
+            # AI structure (if available) fills pages where rule-based finds no semantics.
+            page_structures = {}
+            if os.environ.get("ANTHROPIC_API_KEY") and ai_descriptions:
+                # Reuse page images already rendered for AI descriptions
+                ai_pages_dir = os.path.join(tmpdir, "ai_pages")
+                if os.path.isdir(ai_pages_dir):
+                    ai_paths = sorted(
+                        os.path.join(ai_pages_dir, f)
+                        for f in os.listdir(ai_pages_dir)
+                        if f.endswith(".jpg")
+                    )
+                    if ai_paths:
+                        page_structures = analyze_structure_with_ai(
+                            ai_paths, page_texts, lang_code=args.lang)
+
+            process_digital_pdf(
+                base_pdf, args.output,
+                lang=args.lang, title=args.title, author=args.author,
+                ai_descriptions=ai_descriptions,
+                page_structures=page_structures,
+            )
         else:
             # WCAG 1.3.1: analyze document structure with AI for rich semantic tagging
             page_structures = {}
