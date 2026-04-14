@@ -76,10 +76,26 @@ _LIST_PATTERNS: List[re.Pattern] = [
     re.compile(r"^(?:ix|iv|vi{0,3}|xi|x|i{1,3})\.\s", re.I),
 ]
 
+# Definition-list item: "term" – definition  (Hebrew legal docs use geresh/quote)
+_DEF_ITEM_RE = re.compile(
+    r'^["״\u201c\u201d\u05F4][^\u201d"״\u05F4]{1,50}["״\u201d\u05F4]\s*[-\u2013\u2014]',
+    re.UNICODE,
+)
+
+# Colon-terminated section header: "נוכחים:" / "על סדר היום:" (≤60 chars, ends with colon)
+_SECTION_COLON_RE = re.compile(r'^[^\n]{1,60}[:\uFF1A]\s*$', re.UNICODE)
+
 
 def _is_list_item(text: str) -> bool:
     s = text.strip()
-    return any(p.match(s) for p in _LIST_PATTERNS)
+    return any(p.match(s) for p in _LIST_PATTERNS) or bool(_DEF_ITEM_RE.match(s))
+
+
+def _is_hebrew_dominant(text: str) -> bool:
+    """Return True if the text has at least as many Hebrew chars as Latin chars."""
+    hebrew = sum(1 for c in text if '\u05D0' <= c <= '\u05EA')
+    latin  = sum(1 for c in text if 'a' <= c.lower() <= 'z')
+    return hebrew >= max(latin, 1)
 
 
 def _strip_list_marker(text: str) -> str:
@@ -164,6 +180,22 @@ class HeadingDetector:
         gap  = self._gap_above(block)
         avg_gap   = self._avg_gap.get(block.page_num, 0.0)
         large_gap = gap > avg_gap * 1.8 and avg_gap > 0
+
+        # --- Colon-terminated section header (e.g. "נוכחים:", "על סדר היום:") ---
+        # Applies regardless of font/bold/gap — common Israeli protocol pattern.
+        # Limit to short standalone headers (≤6 words, no mid-sentence punctuation).
+        if _SECTION_COLON_RE.match(text) and words <= 6 and '.' not in text and ',' not in text:
+            # Detect level by position: large gap → H1, otherwise H2
+            if large_gap and gap > avg_gap * 2.5 and avg_gap > 0:
+                return "H1"
+            return "H2"
+
+        # --- First block on the first page → likely the document title (H1) ---
+        min_page = min(self._sorted_by_page.keys()) if self._sorted_by_page else 1
+        if block.page_num == min_page and words <= 12:
+            pg_blocks = self._sorted_by_page.get(block.page_num, [])
+            if pg_blocks and pg_blocks[0] is block:
+                return "H1"
 
         # Uniform-font document (all text same size — common in Israeli official docs).
         # Fall back to bold + gap + word-count heuristics.
@@ -502,6 +534,9 @@ class StructureDetector:
         hd = HeadingDetector(ordered)
         non_table_elems = self._classify_free(ordered, hd)
 
+        # 4b. Post-process: group consecutive short P after a heading → List
+        non_table_elems = self._group_name_lists(non_table_elems)
+
         # 5. Convert raw_tables → StructElements
         table_elems = [self._build_table_elem(t) for t in raw_tables]
 
@@ -563,6 +598,69 @@ class StructureDetector:
 
         flush_list()
         return elements
+
+    # ------------------------------------------------------------------
+    def _group_name_lists(self, elements: List[StructElement]) -> List[StructElement]:
+        """
+        Post-process: convert runs of short P elements that immediately follow a
+        heading into a List/LI structure.
+
+        Typical Hebrew protocol pattern:
+            H2 "נוכחים:"
+            P  "ראש העיר משה לוי"
+            P  "מנכ"ל העירייה דוד כהן"
+            ...  → these should be L / LI / LBody
+
+        Trigger conditions (all must hold):
+          - The preceding element is a heading (H1/H2/H3)
+          - At least 2 consecutive P elements
+          - Each P is short (≤ 10 words)
+          - Hebrew-dominant text (more Hebrew chars than Latin)
+        """
+        _MAX_NAME_WORDS = 10
+        _MIN_NAME_ITEMS = 2
+
+        result: List[StructElement] = []
+        i = 0
+        while i < len(elements):
+            elem = elements[i]
+            result.append(elem)
+            i += 1
+
+            if elem.elem_type not in ("H1", "H2", "H3"):
+                continue
+
+            # Peek ahead: collect consecutive short Hebrew P blocks
+            name_items: List[StructElement] = []
+            j = i
+            while j < len(elements):
+                nxt = elements[j]
+                if nxt.elem_type != "P":
+                    break
+                text = (nxt.text or "").strip()
+                wc   = len(text.split())
+                if wc > _MAX_NAME_WORDS or not _is_hebrew_dominant(text):
+                    break
+                name_items.append(nxt)
+                j += 1
+
+            if len(name_items) >= _MIN_NAME_ITEMS:
+                lst = StructElement("L", page_num=name_items[0].page_num)
+                for item in name_items:
+                    li   = StructElement("LI", page_num=item.page_num)
+                    lbody = StructElement(
+                        "LBody", text=item.text,
+                        page_num=item.page_num,
+                        source_bbox=item.source_bbox,
+                        attrs={"original_text": item.text},
+                    )
+                    li.add(lbody)
+                    lst.add(li)
+                result.append(lst)
+                i = j  # skip the consumed P elements
+            # else: leave P elements as-is (will be appended in next iterations)
+
+        return result
 
     def _build_table_elem(self, table_data: dict) -> StructElement:
         table  = StructElement("Table", page_num=table_data["page_num"])
