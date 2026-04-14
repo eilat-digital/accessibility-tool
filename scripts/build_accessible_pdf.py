@@ -675,6 +675,7 @@ def process_digital_pdf(input_pdf, output_pdf, lang="he-IL",
             extract_blocks, extract_lines, StructureDetector,
             merge_ai_structure, inject_digital, build_bookmarks,
             StructValidator,
+            DocumentClassifier, DOC_TYPE_LABELS, type_specific_warnings,
         )
         _pipeline_ok = True
     except ImportError as _e:
@@ -689,6 +690,10 @@ def process_digital_pdf(input_pdf, output_pdf, lang="he-IL",
     blocks = extract_blocks(input_pdf)
     print(f"  חולצו {len(blocks)} בלוקי טקסט מ-{input_pdf}")
 
+    # --- Document type classification ---
+    doc_type = DocumentClassifier().classify(blocks)
+    print(f"  סוג מסמך שזוהה: {DOC_TYPE_LABELS.get(doc_type, str(doc_type))}")
+
     # Extract graphic lines for border-based table detection
     g_lines = extract_lines(input_pdf)
     h_lines = sum(1 for l in g_lines if l.is_horizontal)
@@ -697,10 +702,15 @@ def process_digital_pdf(input_pdf, output_pdf, lang="he-IL",
         print(f"  זוהו {len(g_lines)} קווים גרפיים "
               f"(אופקי: {h_lines}, אנכי: {v_lines}) — גילוי טבלאות לפי גבולות")
 
-    elements = StructureDetector().detect(blocks, graphic_lines=g_lines or None)
-    tbl_count = sum(1 for e in elements if e.elem_type == "Table")
+    # Detect structure using specialized pipeline for this document type
+    elements = StructureDetector().detect(
+        blocks, graphic_lines=g_lines or None, doc_type=doc_type
+    )
+    tbl_count  = sum(1 for e in elements if e.elem_type == "Table")
+    head_count = sum(1 for e in elements if e.elem_type in ("H1", "H2", "H3"))
+    list_count = sum(1 for e in elements if e.elem_type == "L")
     print(f"  זוהו {len(elements)} אלמנטים "
-          f"(טבלאות: {tbl_count})")
+          f"(כותרות: {head_count}, רשימות: {list_count}, טבלאות: {tbl_count})")
 
     # Merge AI structure where rule-based found no semantics
     if page_structures:
@@ -712,6 +722,9 @@ def process_digital_pdf(input_pdf, output_pdf, lang="he-IL",
     pre_result = sv.validate(elements, lang=lang, title=title)
     print(f"  ציון מבנה מקדים: {pre_result.score}/100 ({pre_result.status})")
     for w in pre_result.warnings:
+        print(f"  [!] {w}")
+    # Type-specific validation warnings
+    for w in type_specific_warnings(elements, doc_type):
         print(f"  [!] {w}")
 
     # Inject tag tree
@@ -1180,6 +1193,7 @@ def process_scanned_pdf(base_pdf, output_pdf, lang="he-IL", title="מסמך נג
             extract_blocks, extract_lines, StructureDetector,
             merge_ai_structure, inject_scanned, build_bookmarks,
             StructValidator,
+            DocumentClassifier, DOC_TYPE_LABELS, type_specific_warnings,
         )
         _pipeline_ok = True
     except ImportError as _e:
@@ -1198,9 +1212,18 @@ def process_scanned_pdf(base_pdf, output_pdf, lang="he-IL", title="מסמך נג
     print(f"  חולצו {len(blocks)} בלוקי טקסט (OCR), "
           f"{len(g_lines)} קווים גרפיים")
 
-    elements = StructureDetector().detect(blocks, graphic_lines=g_lines or None)
-    tbl_count = sum(1 for e in elements if e.elem_type == "Table")
-    print(f"  זוהו {len(elements)} אלמנטים (טבלאות: {tbl_count})")
+    # --- Document type classification (use OCR blocks) ---
+    doc_type = DocumentClassifier().classify(blocks)
+    print(f"  סוג מסמך שזוהה: {DOC_TYPE_LABELS.get(doc_type, str(doc_type))}")
+
+    elements = StructureDetector().detect(
+        blocks, graphic_lines=g_lines or None, doc_type=doc_type
+    )
+    tbl_count  = sum(1 for e in elements if e.elem_type == "Table")
+    head_count = sum(1 for e in elements if e.elem_type in ("H1", "H2", "H3"))
+    list_count = sum(1 for e in elements if e.elem_type == "L")
+    print(f"  זוהו {len(elements)} אלמנטים "
+          f"(כותרות: {head_count}, רשימות: {list_count}, טבלאות: {tbl_count})")
 
     # AI structure merge when available
     if os.environ.get("ANTHROPIC_API_KEY") and page_paths:
@@ -1214,6 +1237,8 @@ def process_scanned_pdf(base_pdf, output_pdf, lang="he-IL", title="מסמך נג
     pre_result = sv.validate(elements, lang=lang, title=title)
     print(f"  ציון מבנה מקדים: {pre_result.score}/100 ({pre_result.status})")
     for w in pre_result.warnings:
+        print(f"  [!] {w}")
+    for w in type_specific_warnings(elements, doc_type):
         print(f"  [!] {w}")
 
     # Build per-page element map

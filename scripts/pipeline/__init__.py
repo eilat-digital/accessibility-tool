@@ -4,17 +4,28 @@ scripts/pipeline — PDF/UA-1 accessibility pipeline for Eilat Municipality.
 Modules
 -------
 models      TextBlock, StructElement, ValidationResult
+classifier  DocumentClassifier, DocumentType, DOC_TYPE_LABELS, type_specific_warnings
 parser      extract_blocks()  — pdfminer text extraction with layout info
 detector    StructureDetector, HeadingDetector, TableDetector, sort_reading_order
             merge_ai_structure()
 tag_builder inject_digital(), inject_scanned(), build_bookmarks()
 validator   StructValidator, FileValidator
+
+Pipeline flow
+-------------
+  blocks = extract_blocks(pdf)
+  lines  = extract_lines(pdf)
+  doc_type = DocumentClassifier().classify(blocks)
+  elements = StructureDetector().detect(blocks, graphic_lines=lines, doc_type=doc_type)
+  warnings = type_specific_warnings(elements, doc_type)
+  inject_digital(pdf, elements, ...)
 """
 
-from .models    import TextBlock, StructElement, ValidationResult
-from .parser    import extract_blocks, extract_lines, has_text
-from .parser    import GraphicLine
-from .detector  import (
+from .models      import TextBlock, StructElement, ValidationResult
+from .classifier  import DocumentClassifier, DocumentType, DOC_TYPE_LABELS, type_specific_warnings
+from .parser      import extract_blocks, extract_lines, has_text
+from .parser      import GraphicLine
+from .detector    import (
     StructureDetector,
     HeadingDetector,
     TableDetector,
@@ -28,6 +39,8 @@ from .validator   import StructValidator, FileValidator
 __all__ = [
     # models
     "TextBlock", "StructElement", "ValidationResult",
+    # classifier
+    "DocumentClassifier", "DocumentType", "DOC_TYPE_LABELS", "type_specific_warnings",
     # parser
     "extract_blocks", "extract_lines", "has_text", "GraphicLine",
     # detector

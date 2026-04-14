@@ -18,6 +18,9 @@ from typing import Dict, List, Optional, Set, Tuple
 
 from .models import StructElement, TextBlock
 
+# DocumentType is imported lazily in detect() to avoid circular imports at module load.
+# Use: from .classifier import DocumentType
+
 # ---------------------------------------------------------------------------
 # Reading-order sort (used internally and exported for main script)
 # ---------------------------------------------------------------------------
@@ -84,6 +87,23 @@ _DEF_ITEM_RE = re.compile(
 
 # Colon-terminated section header: "נוכחים:" / "על סדר היום:" (≤60 chars, ends with colon)
 _SECTION_COLON_RE = re.compile(r'^[^\n]{1,60}[:\uFF1A]\s*$', re.UNICODE)
+
+# Legal numbered-clause hierarchy: "1." "1.1." "1.1.1."
+_LEGAL_CLAUSE_RE = re.compile(r'^(\d+(?:\.\d+)*)\.\s+\S', re.UNICODE)
+
+
+def _legal_clause_level(text: str) -> Optional[int]:
+    """
+    Return H-level (1-3) for a numbered legal clause, or None.
+    "1. title"       → 1 (H1)
+    "1.1. title"     → 2 (H2)
+    "1.1.1. title"   → 3 (H3)
+    """
+    m = _LEGAL_CLAUSE_RE.match(text.strip())
+    if not m:
+        return None
+    dots = m.group(1).count('.')   # "1"→0  "1.1"→1  "1.1.1"→2
+    return min(dots + 1, 3)
 
 
 def _is_list_item(text: str) -> bool:
@@ -502,7 +522,24 @@ class StructureDetector:
         self,
         blocks: List[TextBlock],
         graphic_lines=None,    # Optional[List[GraphicLine]]
+        doc_type=None,         # Optional[DocumentType] — from DocumentClassifier
     ) -> List[StructElement]:
+        """
+        Detect semantic structure elements from text blocks.
+
+        Parameters
+        ----------
+        blocks        : text blocks from extract_blocks()
+        graphic_lines : graphic line objects from extract_lines() (for border tables)
+        doc_type      : DocumentType from DocumentClassifier — selects specialized pipeline.
+                        None / GENERAL → default pipeline.
+        """
+        # Lazy import to avoid circular dependency at module load time
+        try:
+            from .classifier import DocumentType as _DT
+        except ImportError:
+            _DT = None
+
         if not blocks:
             return []
 
@@ -530,12 +567,21 @@ class StructureDetector:
         # 3. Reading order for free blocks
         ordered = sort_reading_order(free_blocks)
 
-        # 4. Heading + list + paragraph detection
+        # 4. Heading + list + paragraph detection — route to specialized pipeline
         hd = HeadingDetector(ordered)
-        non_table_elems = self._classify_free(ordered, hd)
 
-        # 4b. Post-process: group consecutive short P after a heading → List
-        non_table_elems = self._group_name_lists(non_table_elems)
+        if _DT and doc_type == _DT.PROTOCOL:
+            non_table_elems = self._classify_protocol(ordered, hd)
+            non_table_elems = self._group_name_lists(non_table_elems)
+        elif _DT and doc_type == _DT.LEGAL:
+            non_table_elems = self._classify_legal(ordered, hd)
+        elif _DT and doc_type == _DT.WORKPLAN:
+            non_table_elems = self._classify_free(ordered, hd)
+            # workplan: skip name-list grouping; tables already detected above
+        else:
+            # GENERAL / NEWSLETTER / FORM / SCANNED / None → default pipeline
+            non_table_elems = self._classify_free(ordered, hd)
+            non_table_elems = self._group_name_lists(non_table_elems)
 
         # 5. Convert raw_tables → StructElements
         table_elems = [self._build_table_elem(t) for t in raw_tables]
@@ -543,6 +589,167 @@ class StructureDetector:
         # 6. Merge: insert tables at their natural reading-order position
         return self._merge(non_table_elems, table_elems)
 
+    # ------------------------------------------------------------------
+    # Protocol pipeline
+    # ------------------------------------------------------------------
+    def _classify_protocol(self, blocks: List[TextBlock],
+                            hd: HeadingDetector) -> List[StructElement]:
+        """
+        Protocol-specific classification (פרוטוקול):
+          - Colon-terminated headers already handled by HeadingDetector
+          - Numbered agenda items: "1. Item" under "על סדר היום" → List/LI
+          - Decision blocks: lines starting with "הוחלט" → H3 + P
+          - Rest delegated to _classify_free
+        """
+        elements: List[StructElement] = []
+        list_buf: List[TextBlock] = []
+        in_agenda = False      # True while inside "על סדר היום" section
+
+        _DECISION_RE = re.compile(r'^הוחלט[:\s]', re.UNICODE)
+        _AGENDA_SECTION_RE = re.compile(r'^על\s+סדר\s+היום', re.UNICODE)
+
+        def flush_list():
+            if not list_buf:
+                return
+            lst = StructElement("L", page_num=list_buf[0].page_num)
+            for lb in list_buf:
+                item_text = _strip_list_marker(lb.text)
+                li    = StructElement("LI", page_num=lb.page_num)
+                lbody = StructElement(
+                    "LBody", text=item_text, page_num=lb.page_num,
+                    source_bbox=lb.bbox,
+                    attrs={"original_text": lb.text},
+                )
+                li.add(lbody)
+                lst.add(li)
+            elements.append(lst)
+            list_buf.clear()
+
+        for block in blocks:
+            text = block.text.strip()
+            if not text:
+                continue
+
+            # Decision block → H3 heading (marks start of a decision)
+            if _DECISION_RE.match(text) and len(text.split()) <= 20:
+                flush_list()
+                in_agenda = False
+                elements.append(StructElement.heading(
+                    3, text, page_num=block.page_num, bbox=block.bbox
+                ))
+                continue
+
+            # Heading detection (includes colon-headers from HeadingDetector)
+            level_str = hd.classify(block)
+            if level_str:
+                flush_list()
+                level = int(level_str[1])
+                elements.append(StructElement.heading(
+                    level, text, page_num=block.page_num, bbox=block.bbox
+                ))
+                # Track agenda section to force numbered sub-items into lists
+                if _AGENDA_SECTION_RE.match(text):
+                    in_agenda = True
+                else:
+                    in_agenda = False
+                continue
+
+            # Numbered list items (always list, even inside agenda)
+            if _is_list_item(text) or (in_agenda and _LEGAL_CLAUSE_RE.match(text)):
+                list_buf.append(block)
+                continue
+
+            # Paragraph
+            flush_list()
+            elements.append(StructElement.paragraph(
+                text, page_num=block.page_num, bbox=block.bbox,
+            ))
+
+        flush_list()
+        return elements
+
+    # ------------------------------------------------------------------
+    # Legal pipeline
+    # ------------------------------------------------------------------
+    def _classify_legal(self, blocks: List[TextBlock],
+                         hd: HeadingDetector) -> List[StructElement]:
+        """
+        Legal / regulatory document pipeline (חוק, תקנות, חוק עזר):
+          - Numbered clauses (1. / 1.1. / 1.1.1.) → H1/H2/H3 in strict hierarchy
+          - Definition items ("term" – definition) → L/LI
+          - Annex/appendix headings ("תוספת", "נספח") → H2
+          - Everything else → _classify_free fallback
+        """
+        elements: List[StructElement] = []
+        list_buf: List[TextBlock] = []
+
+        _ANNEX_RE = re.compile(r'^(?:תוספת|נספח|ספח|סד"כ|פרק)\s', re.UNICODE)
+
+        def flush_list():
+            if not list_buf:
+                return
+            lst = StructElement("L", page_num=list_buf[0].page_num)
+            for lb in list_buf:
+                item_text = _strip_list_marker(lb.text)
+                li    = StructElement("LI", page_num=lb.page_num)
+                lbody = StructElement(
+                    "LBody", text=item_text, page_num=lb.page_num,
+                    source_bbox=lb.bbox,
+                    attrs={"original_text": lb.text},
+                )
+                li.add(lbody)
+                lst.add(li)
+            elements.append(lst)
+            list_buf.clear()
+
+        for block in blocks:
+            text = block.text.strip()
+            if not text:
+                continue
+
+            # --- Numbered clause → heading (BEFORE generic list-item check) ---
+            clause_lvl = _legal_clause_level(text)
+            if clause_lvl is not None:
+                flush_list()
+                elements.append(StructElement.heading(
+                    clause_lvl, text, page_num=block.page_num, bbox=block.bbox
+                ))
+                continue
+
+            # --- Annex / appendix headings ---
+            if _ANNEX_RE.match(text) and len(text.split()) <= 10:
+                flush_list()
+                elements.append(StructElement.heading(
+                    2, text, page_num=block.page_num, bbox=block.bbox
+                ))
+                continue
+
+            # --- Colon headers (הגדרות:, פרשנות:) via HeadingDetector ---
+            level_str = hd.classify(block)
+            if level_str:
+                flush_list()
+                level = int(level_str[1])
+                elements.append(StructElement.heading(
+                    level, text, page_num=block.page_num, bbox=block.bbox
+                ))
+                continue
+
+            # --- Definition / regular list item ---
+            if _is_list_item(text):
+                list_buf.append(block)
+                continue
+
+            # --- Paragraph ---
+            flush_list()
+            elements.append(StructElement.paragraph(
+                text, page_num=block.page_num, bbox=block.bbox,
+            ))
+
+        flush_list()
+        return elements
+
+    # ------------------------------------------------------------------
+    # General / fallback pipeline
     # ------------------------------------------------------------------
     def _classify_free(self, blocks: List[TextBlock],
                         hd: HeadingDetector) -> List[StructElement]:
