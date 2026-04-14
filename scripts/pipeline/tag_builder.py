@@ -45,6 +45,52 @@ _ALL_VALID = (
 )
 
 # ============================================================
+# Hebrew-safe PDF string decoding
+# ============================================================
+
+def _decode_pdf_string(s) -> str:
+    """
+    Decode a pikepdf String to Python unicode.
+
+    pikepdf.String stores raw bytes.  Hebrew PDFs commonly use:
+      - UTF-16 BE with BOM (FE FF)
+      - PDFDocEncoding (cp1252 superset)
+      - cp1255 (Windows Hebrew)
+      - Custom CMap  → raw bytes that look like cp1255
+
+    str(pikepdf.String) applies latin-1 cast which produces mojibake.
+    We try encodings in order of likelihood for Israeli government PDFs.
+    """
+    try:
+        raw = bytes(s)
+    except Exception:
+        return str(s)
+    if not raw:
+        return ""
+    # UTF-16 with BOM
+    if raw[:2] in (b'\xfe\xff', b'\xff\xfe'):
+        try:
+            return raw.decode('utf-16')
+        except Exception:
+            pass
+    # UTF-8
+    try:
+        return raw.decode('utf-8')
+    except UnicodeDecodeError:
+        pass
+    # cp1255 (Windows Hebrew)
+    try:
+        return raw.decode('cp1255')
+    except UnicodeDecodeError:
+        pass
+    # PDFDocEncoding fallback (cp1252)
+    try:
+        return raw.decode('cp1252', errors='replace')
+    except Exception:
+        return raw.decode('latin-1', errors='replace')
+
+
+# ============================================================
 # Content-stream per-block MCID injection
 # ============================================================
 
@@ -95,14 +141,14 @@ def _inject_mcids_into_page(
             s = str(op)
             if s in ("Tj", "'", '"') and ops:
                 try:
-                    parts.append(str(ops[0]))
+                    parts.append(_decode_pdf_string(ops[0]))
                 except Exception:
                     pass
             elif s == "TJ" and ops:
                 try:
                     for item in ops[0]:
                         if isinstance(item, pikepdf.String):
-                            parts.append(str(item))
+                            parts.append(_decode_pdf_string(item))
                 except Exception:
                     pass
         return "".join(parts).strip()
@@ -229,6 +275,15 @@ def _normalize(text: str) -> str:
     return re.sub(r"\s+", " ", t).strip()
 
 
+def _match_text(elem: "StructElement") -> str:
+    """
+    Return the best text for MCID matching.
+    LBody elements have their list marker stripped in .text — use original_text
+    attr (set by detector) which includes the marker and matches the content stream.
+    """
+    return elem.attrs.get("original_text") or elem.text or ""
+
+
 def _get_leaves(elements: List[StructElement]) -> List[StructElement]:
     """Depth-first ordered list of leaf StructElements."""
     out: List[StructElement] = []
@@ -268,7 +323,7 @@ def _assign_mcids(
 
     # Pass 1 — best text match
     for leaf in leaf_elems:
-        leaf_norm = _normalize(leaf.text or "")
+        leaf_norm = _normalize(_match_text(leaf))
         if not leaf_norm:
             continue
         best_m: Optional[int] = None
@@ -488,6 +543,24 @@ def inject_digital(
         # --- Step 1: inject per-block MCIDs into content stream ----------
         mcid_texts = _inject_mcids_into_page(pdf, page_obj, mcid_start=0)
         n_mcids    = len(mcid_texts)
+
+        # Fallback when content stream parsing fails:
+        # wrap entire page in one BDC so StructParents has a valid ParentTree entry.
+        if not mcid_texts:
+            try:
+                bdc = b"<<\n/MCID 0\n>> BDC\n"
+                emc = b"\nEMC\n"
+                raw = page_obj.get("/Contents")
+                orig = b""
+                if raw is not None:
+                    obj = raw.get_object() if hasattr(raw, "get_object") else raw
+                    if hasattr(obj, "read_bytes"):
+                        orig = obj.read_bytes()
+                page_obj["/Contents"] = pdf.make_stream(bdc + orig + emc)
+                mcid_texts = [(0, "")]
+                n_mcids    = 1
+            except Exception:
+                pass
 
         # --- Step 2: match leaf struct elems to MCIDs --------------------
         page_elems    = by_page.get(pg_num, [])

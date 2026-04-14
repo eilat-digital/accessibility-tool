@@ -159,12 +159,29 @@ class HeadingDetector:
         if _is_list_item(text):
             return None
 
-        fs = block.font_size
+        fs   = block.font_size
         bold = block.is_bold
-        gap = self._gap_above(block)
-        avg_gap = self._avg_gap.get(block.page_num, 0.0)
+        gap  = self._gap_above(block)
+        avg_gap   = self._avg_gap.get(block.page_num, 0.0)
         large_gap = gap > avg_gap * 1.8 and avg_gap > 0
 
+        # Uniform-font document (all text same size — common in Israeli official docs).
+        # Fall back to bold + gap + word-count heuristics.
+        if self.p90 <= self.p60 * 1.05:   # all percentiles within 5%
+            if not bold and not large_gap:
+                return None
+            if words <= 8:
+                if large_gap and gap > avg_gap * 3.0:
+                    return "H1"
+                if bold and large_gap:
+                    return "H2"
+                if bold:
+                    return "H3"
+            if words <= 15 and bold and large_gap:
+                return "H3"
+            return None
+
+        # Variable-font document: percentile-based classification
         if fs >= self.p90:
             return "H1"
         if fs >= self.p75:
@@ -507,6 +524,8 @@ class StructureDetector:
                 lbody = StructElement(
                     "LBody", text=item_text,
                     page_num=lb.page_num, source_bbox=lb.bbox,
+                    # original_text preserves list marker for MCID content-stream matching
+                    attrs={"original_text": lb.text},
                 )
                 li.add(lbody)
                 list_elem.add(li)
@@ -534,6 +553,7 @@ class StructureDetector:
             if _is_list_item(text):
                 list_buf.append(block)
                 continue
+
 
             # --- paragraph ---
             flush_list()

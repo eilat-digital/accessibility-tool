@@ -1154,6 +1154,86 @@ def _report(errors, warnings):
     print('='*60)
 
 
+def process_scanned_pdf(base_pdf, output_pdf, lang="he-IL", title="מסמך נגיש",
+                         author="", page_texts=None, ai_descriptions=None, page_paths=None):
+    """
+    Full pipeline for scanned (image-based) PDFs.
+
+    Uses the same rule-based StructureDetector as the digital path, then calls
+    inject_scanned() from the pipeline to build a correct PDF/UA-1 StructTreeRoot.
+
+    Structure per page:
+        Sect → Figure [MCID=0, Alt=description] + H1/P/List/Table (siblings)
+
+    The content stream BDC/EMC for MCID=0 is written by patch_stream()
+    (already applied when build_image_pdf creates the base PDF).
+    """
+    import pikepdf, shutil
+    from collections import defaultdict
+
+    try:
+        import sys as _sys, os as _os
+        _scripts_dir = _os.path.dirname(_os.path.abspath(__file__))
+        if _scripts_dir not in _sys.path:
+            _sys.path.insert(0, _scripts_dir)
+        from pipeline import (
+            extract_blocks, extract_lines, StructureDetector,
+            merge_ai_structure, inject_scanned, build_bookmarks,
+            StructValidator,
+        )
+        _pipeline_ok = True
+    except ImportError as _e:
+        print(f"  pipeline import: {_e} — fallback to add_pdfua_tags")
+        _pipeline_ok = False
+
+    if not _pipeline_ok:
+        add_pdfua_tags(base_pdf, output_pdf, lang=lang, title=title, author=author,
+                       page_texts=page_texts or {}, pdf_type='scanned',
+                       ai_descriptions=ai_descriptions or {}, page_structures={})
+        return
+
+    print("  מנתח מבנה PDF סרוק (pipeline)...")
+    blocks  = extract_blocks(base_pdf)
+    g_lines = extract_lines(base_pdf)
+    print(f"  חולצו {len(blocks)} בלוקי טקסט (OCR), "
+          f"{len(g_lines)} קווים גרפיים")
+
+    elements = StructureDetector().detect(blocks, graphic_lines=g_lines or None)
+    tbl_count = sum(1 for e in elements if e.elem_type == "Table")
+    print(f"  זוהו {len(elements)} אלמנטים (טבלאות: {tbl_count})")
+
+    # AI structure merge when available
+    if os.environ.get("ANTHROPIC_API_KEY") and page_paths:
+        page_structures = analyze_structure_with_ai(
+            page_paths, page_texts or {}, lang_code=lang)
+        elements = merge_ai_structure(elements, page_structures, lang=lang)
+        print(f"  לאחר מיזוג AI: {len(elements)} אלמנטים")
+
+    # Pre-export validation
+    sv = StructValidator()
+    pre_result = sv.validate(elements, lang=lang, title=title)
+    print(f"  ציון מבנה מקדים: {pre_result.score}/100 ({pre_result.status})")
+    for w in pre_result.warnings:
+        print(f"  [!] {w}")
+
+    # Build per-page element map
+    by_page = defaultdict(list)
+    for e in elements:
+        by_page[e.page_num].append(e)
+
+    shutil.copy2(base_pdf, output_pdf)
+    with pikepdf.open(output_pdf, allow_overwriting_input=True) as pdf:
+        fix_standard_font_encoding(pdf)
+        inject_scanned(pdf, dict(by_page),
+                       lang=lang, title=title, author=author,
+                       fig_mcid=0)
+        heading_elems = [e for e in elements if e.elem_type in ("H1", "H2", "H3")]
+        build_bookmarks(pdf, heading_elems, page_texts=page_texts or {})
+        pdf.save(output_pdf)
+
+    print(f"✅ PDF נגיש (pipeline סרוק): {output_pdf}")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--input",        default=None)
@@ -1254,20 +1334,14 @@ def main():
                 page_structures=page_structures,
             )
         else:
-            # WCAG 1.3.1: analyze document structure with AI for rich semantic tagging
-            page_structures = {}
-            if os.environ.get("ANTHROPIC_API_KEY") and page_paths:
-                page_structures = analyze_structure_with_ai(
-                    page_paths, page_texts, lang_code=args.lang)
-
-            add_pdfua_tags(base_pdf, args.output,
-                           lang=args.lang, title=args.title, author=args.author,
-                           page_texts=page_texts,
-                           page_titles=page_titles,
-                           tables_info=tables_info,
-                           pdf_type=pdf_type,
-                           ai_descriptions=ai_descriptions,
-                           page_structures=page_structures)
+            # Scanned PDF — new semantic pipeline
+            process_scanned_pdf(
+                base_pdf, args.output,
+                lang=args.lang, title=args.title, author=args.author,
+                page_texts=page_texts,
+                ai_descriptions=ai_descriptions,
+                page_paths=page_paths if 'page_paths' in dir() else [],
+            )
 
         if args.stamp:
             apply_stamp_to_pdf(args.output)
