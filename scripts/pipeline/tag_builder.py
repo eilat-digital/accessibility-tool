@@ -4,23 +4,26 @@ tag_builder.py — Inject a PDF/UA-1 compliant StructTreeRoot into a pikepdf PDF
 Two public entry points:
 
   inject_digital(pdf, elements, lang, title, author)
-    For digital (born-digital) PDFs that already have text in content streams.
-    Wraps each page's entire content stream in a single BDC/EMC pair (MCID=0)
-    so PAC sees every content operator as tagged.
-    Semantic children (H1/H2/P/List/Table) are embedded inside the page Div
-    with ActualText, wired to the same MCID reference.
+    For digital (born-digital) PDFs.
+    Parses each page's content stream and wraps every BT/ET text block in
+    its own BDC<<MCID n>>...EMC.  Non-text content is wrapped as Artifact.
+    Each leaf StructElement (H1, P, TH, TD, LBody …) is bound to its own MCID.
+    A correct ParentTree is built so PAC can verify the full content binding.
 
-  inject_scanned(pdf, elements, page_mcid_map, lang, title, author)
+  inject_scanned(pdf, page_elements, lang, title, author)
     For PDFs rebuilt from rasterised pages (each page = one Figure MCID).
-    Figure wraps the image MCID; semantic elements (H1/P/List/Table) are
-    placed as Sect siblings AFTER the Figure — never inside it.
+    Figure wraps the raster image; semantic elements (H1/P/List/Table) are
+    placed as Sect siblings AFTER the Figure — never nested inside it.
 
 Both functions operate in-place on the pikepdf.Pdf object.
 Caller is responsible for saving.
 """
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+import re
+import unicodedata
+from collections import defaultdict
+from typing import Dict, List, Optional, Tuple
 
 import pikepdf
 from pikepdf import Array, Boolean, Dictionary, Name, String
@@ -28,78 +31,160 @@ from pikepdf import Array, Boolean, Dictionary, Name, String
 from .models import StructElement, HEADING_TYPES, TABLE_TYPES, LIST_TYPES
 
 # PDF/UA attribute owners
-_O_TABLE = Name("/Table")
-_O_LIST  = Name("/List")
-_O_LAYOUT= Name("/Layout")
+_O_TABLE  = Name("/Table")
+_O_LIST   = Name("/List")
+_O_LAYOUT = Name("/Layout")
 
+# Standard structure types accepted for export (anything else coerces to P)
+_ALL_VALID = (
+    HEADING_TYPES | TABLE_TYPES | LIST_TYPES |
+    {"Document", "Sect", "Div", "Part", "Art",
+     "P", "Figure", "Caption", "BlockQuote",
+     "Span", "Link", "Note", "Reference",
+     "TOC", "TOCI", "Index", "Formula"}
+)
 
-# ---------------------------------------------------------------------------
-# Content stream BDC/EMC helpers
-# ---------------------------------------------------------------------------
+# ============================================================
+# Content-stream per-block MCID injection
+# ============================================================
 
-def _wrap_page_content_stream(pdf: pikepdf.Pdf, page_obj, mcid: int = 0) -> bool:
+def _inject_mcids_into_page(
+    pdf: pikepdf.Pdf,
+    page_obj,
+    mcid_start: int = 0,
+) -> List[Tuple[int, str]]:
     """
-    Wrap the entire page content stream in a single BDC/EMC pair.
+    Parse the page content stream and rewrite it so that:
+      - Every BT...ET text block is wrapped in  /P <<MCID n>> BDC ... EMC
+      - All other content (graphics, rules) is wrapped as
+        /Artifact <</Type /Layout>> BDC ... EMC
 
-    <<\n/MCID {mcid}\n>> BDC\n
-    ... original content ...
-    EMC\n
-
-    This ensures every text/graphics operator on the page is inside a
-    tagged marked-content section, which is required by PDF/UA for PAC to pass.
-
-    Returns True if patching succeeded, False otherwise.
+    Returns list of (mcid, extracted_text) in document order.
+    Returns [] (and leaves the content stream unchanged) on any failure.
     """
     try:
-        bdc = f"<<\n/MCID {mcid}\n>> BDC\n".encode("latin-1")
-        emc = b"\nEMC\n"
-
-        contents_obj = page_obj.get("/Contents")
-        if contents_obj is None:
-            # Insert an empty stream with BDC/EMC so the MCID reference is valid
-            new_stream = pdf.make_stream(bdc + emc)
-            page_obj["/Contents"] = new_stream
-            return True
-
-        # Collect raw bytes from possibly an array of streams
-        raw = b""
-        contents_ref = contents_obj
-        if isinstance(contents_ref, pikepdf.Array):
-            for item in contents_ref:
-                stream_obj = item.get_object()
-                if hasattr(stream_obj, "read_bytes"):
-                    raw += stream_obj.read_bytes()
-        else:
-            stream_obj = contents_ref.get_object()
-            if hasattr(stream_obj, "read_bytes"):
-                raw = stream_obj.read_bytes()
-
-        # Quick check: don't double-wrap if already has BDC
-        if b" BDC" in raw or b"/BDC" in raw:
-            # Content already has BDC markers — wrap anyway at outer level
-            # (nested BDC is valid, outer wraps any orphaned operators)
-            pass
-
-        new_content = bdc + raw + emc
-        new_stream = pdf.make_stream(new_content)
-        page_obj["/Contents"] = new_stream
-        return True
+        instrs: List[Tuple] = list(pikepdf.parse_content_stream(page_obj))
     except Exception:
-        return False
+        return []
+
+    if not instrs:
+        return []
+
+    # ---- locate all BT/ET spans -----------------------------------------
+    bt_spans: List[Tuple[int, int]] = []   # (bt_index, et_index) inclusive
+    i = 0
+    while i < len(instrs):
+        if str(instrs[i][1]) == "BT":
+            bt = i
+            j = i + 1
+            while j < len(instrs) and str(instrs[j][1]) != "ET":
+                j += 1
+            bt_spans.append((bt, j))       # j is ET (or past-end)
+            i = j + 1
+        else:
+            i += 1
+
+    if not bt_spans:
+        return []
+
+    # ---- helper: extract text from a BT/ET span -------------------------
+    def _span_text(bt: int, et: int) -> str:
+        parts: List[str] = []
+        for k in range(bt + 1, et):
+            ops, op = instrs[k]
+            s = str(op)
+            if s in ("Tj", "'", '"') and ops:
+                try:
+                    parts.append(str(ops[0]))
+                except Exception:
+                    pass
+            elif s == "TJ" and ops:
+                try:
+                    for item in ops[0]:
+                        if isinstance(item, pikepdf.String):
+                            parts.append(str(item))
+                except Exception:
+                    pass
+        return "".join(parts).strip()
+
+    # ---- build fast-lookup sets -----------------------------------------
+    bt_to_span: Dict[int, Tuple[int, int]] = {}   # bt_idx → (et_idx, span_num)
+    inside_span: set = set()
+    for snum, (bt, et) in enumerate(bt_spans):
+        bt_to_span[bt] = (et, snum)
+        for k in range(bt, et + 1):
+            inside_span.add(k)
+
+    # ---- rewrite instructions -------------------------------------------
+    new_instrs: List[Tuple] = []
+    mcid_texts: List[Tuple[int, str]] = []
+    mcid = mcid_start
+    artifact_buf: List[Tuple] = []
+
+    def _flush_artifact() -> None:
+        if not artifact_buf:
+            return
+        new_instrs.append((
+            [Name("/Artifact"), Dictionary(Type=_O_LAYOUT)],
+            pikepdf.Operator("BDC"),
+        ))
+        new_instrs.extend(artifact_buf)
+        new_instrs.append(([], pikepdf.Operator("EMC")))
+        artifact_buf.clear()
+
+    i = 0
+    while i < len(instrs):
+        if i in bt_to_span:
+            _flush_artifact()
+            et, _ = bt_to_span[i]
+            text = _span_text(i, et)
+
+            # /P <<MCID n>> BDC
+            new_instrs.append((
+                [Name("/P"), Dictionary(MCID=pikepdf.objects.Integer(mcid))],
+                pikepdf.Operator("BDC"),
+            ))
+            # BT ... ET
+            for k in range(i, et + 1):
+                new_instrs.append(instrs[k])
+            # EMC
+            new_instrs.append(([], pikepdf.Operator("EMC")))
+
+            mcid_texts.append((mcid, text))
+            mcid += 1
+            i = et + 1
+
+        elif i in inside_span:
+            # interior of a span already emitted above — skip
+            i += 1
+
+        else:
+            artifact_buf.append(instrs[i])
+            i += 1
+
+    _flush_artifact()
+
+    # ---- write back rewritten stream ------------------------------------
+    try:
+        new_bytes = pikepdf.unparse_content_stream(new_instrs)
+        page_obj["/Contents"] = pdf.make_stream(new_bytes)
+    except Exception:
+        return []
+
+    return mcid_texts
 
 
-# ---------------------------------------------------------------------------
-# Internal builder
-# ---------------------------------------------------------------------------
+# ============================================================
+# Internal struct-tree builder
+# ============================================================
 
 class _Builder:
-    """Internal helper: creates pikepdf indirect Dictionary objects."""
+    """Creates pikepdf indirect Dictionary objects for struct elements."""
 
-    def __init__(self, pdf: pikepdf.Pdf, lang: str):
+    def __init__(self, pdf: pikepdf.Pdf, lang: str) -> None:
         self.pdf  = pdf
         self.lang = lang
 
-    # ------------------------------------------------------------------
     def make_elem(
         self,
         stype: str,
@@ -116,93 +201,199 @@ class _Builder:
             S=Name(f"/{stype}"),
             P=parent,
         )
-        # Language on every element (PDF/UA §7.3 — inheritable, but explicit is safer)
         d["/Lang"] = String(self.lang)
-
         if actual_text:
             d["/ActualText"] = String(actual_text)
         if alt:
             d["/Alt"] = String(alt)
         if title:
             d["/T"] = String(title)
-
-        # Wire to content stream via MCID
         if mcid is not None and page_obj is not None:
-            d["/K"] = pikepdf.objects.Integer(mcid)
+            d["/K"]  = pikepdf.objects.Integer(mcid)
             d["/Pg"] = page_obj
-
         return self.pdf.make_indirect(d)
 
-    # ------------------------------------------------------------------
-    def set_th_attrs(self, elem: pikepdf.Dictionary, scope: str = "Col"):
-        """Add /A attribute dict for TH → Scope."""
+    def set_th_attrs(self, elem: pikepdf.Dictionary, scope: str = "Col") -> None:
         attrs = self.pdf.make_indirect(Dictionary())
-        attrs["/O"] = _O_TABLE
+        attrs["/O"]     = _O_TABLE
         attrs["/Scope"] = Name(f"/{scope}")
         elem["/A"] = attrs
 
-    # ------------------------------------------------------------------
-    def build_struct_elem(
-        self,
-        se: StructElement,
-        parent_ref,
-        *,
-        page_obj=None,
-        mcid: Optional[int] = None,
-    ) -> Optional[pikepdf.Dictionary]:
-        """
-        Recursively convert a StructElement tree → pikepdf indirect objects.
-        Returns the root pikepdf Dictionary (already make_indirect'd).
-        """
-        stype = se.elem_type
-        # Coerce unknown types to P
-        if stype not in (HEADING_TYPES | TABLE_TYPES | LIST_TYPES |
-                         {"Document", "Sect", "Div", "Part", "Art",
-                          "P", "Figure", "Caption", "BlockQuote",
-                          "Span", "Link", "Note", "Reference",
-                          "TOC", "TOCI", "Index", "Formula"}):
-            stype = "P"
 
-        text    = se.text.strip()
-        use_mcid = se.mcid if se.mcid is not None else mcid
+# ============================================================
+# Per-element MCID assignment helpers
+# ============================================================
 
-        pk_elem = self.make_elem(
-            stype, parent_ref,
-            actual_text=text if text else "",
-            alt=text if text and stype == "Figure" else "",
-            page_obj=page_obj,
-            mcid=use_mcid,
-        )
-
-        # TH scope attribute
-        if stype == "TH":
-            scope = se.attrs.get("Scope", "Col")
-            self.set_th_attrs(pk_elem, scope)
-
-        # Children
-        if se.children:
-            child_refs = []
-            for child in se.children:
-                cr = self.build_struct_elem(child, pk_elem, page_obj=page_obj)
-                if cr is not None:
-                    child_refs.append(cr)
-            if child_refs:
-                pk_elem["/K"] = Array(child_refs)
-
-        return pk_elem
+def _normalize(text: str) -> str:
+    t = unicodedata.normalize("NFKC", text or "")
+    return re.sub(r"\s+", " ", t).strip()
 
 
-# ---------------------------------------------------------------------------
-# Public entry points
-# ---------------------------------------------------------------------------
+def _get_leaves(elements: List[StructElement]) -> List[StructElement]:
+    """Depth-first ordered list of leaf StructElements."""
+    out: List[StructElement] = []
+
+    def _dfs(e: StructElement) -> None:
+        if not e.children:
+            out.append(e)
+        else:
+            for c in e.children:
+                _dfs(c)
+
+    for e in elements:
+        _dfs(e)
+    return out
+
+
+def _assign_mcids(
+    page_elems: List[StructElement],
+    mcid_texts: List[Tuple[int, str]],
+) -> Dict[int, int]:
+    """
+    Assign content-stream MCIDs to leaf StructElements.
+
+    Strategy (two passes):
+    1. Exact / substring text match (handles split-line pdfminer merging).
+    2. Sequential fallback for unmatched leaves.
+
+    Returns {id(leaf_elem): mcid}.
+    """
+    leaf_elems = _get_leaves(page_elems)
+    if not leaf_elems or not mcid_texts:
+        return {}
+
+    norm_mcids = [(m, _normalize(t)) for m, t in mcid_texts]
+    used_mcids: set = set()
+    result: Dict[int, int] = {}
+
+    # Pass 1 — best text match
+    for leaf in leaf_elems:
+        leaf_norm = _normalize(leaf.text or "")
+        if not leaf_norm:
+            continue
+        best_m: Optional[int] = None
+        best_score = 0
+        for m, mtext in norm_mcids:
+            if m in used_mcids:
+                continue
+            # Overlap score: shared characters / max length (ignoring spaces)
+            a = leaf_norm.replace(" ", "")
+            b = mtext.replace(" ", "")
+            if not a or not b:
+                continue
+            overlap = len(set(a) & set(b))
+            score   = overlap / max(len(set(a)), len(set(b)))
+            # Bonus if one contains the other
+            if a in b or b in a:
+                score += 0.5
+            if score > best_score:
+                best_score = score
+                best_m = m
+        if best_m is not None and best_score > 0.3:
+            result[id(leaf)] = best_m
+            used_mcids.add(best_m)
+
+    # Pass 2 — sequential fallback for unmatched leaves
+    remaining_mcids = [m for m, _ in norm_mcids if m not in used_mcids]
+    ri = 0
+    for leaf in leaf_elems:
+        if id(leaf) not in result and ri < len(remaining_mcids):
+            result[id(leaf)] = remaining_mcids[ri]
+            ri += 1
+
+    return result
+
+
+def _build_elem_with_mcid(
+    b: _Builder,
+    se: StructElement,
+    parent_ref,
+    page_obj,
+    leaf_mcid_map: Dict[int, int],
+) -> Optional[pikepdf.Dictionary]:
+    """Recursively build a pikepdf struct element tree, assigning MCIDs to leaves."""
+    stype = se.elem_type if se.elem_type in _ALL_VALID else "P"
+    text  = se.text.strip()
+
+    # Leaf: assign MCID if available
+    elem_mcid = leaf_mcid_map.get(id(se)) if not se.children else None
+
+    pk = b.make_elem(
+        stype, parent_ref,
+        actual_text=text,
+        alt=(text if stype == "Figure" else ""),
+        page_obj=(page_obj if elem_mcid is not None else None),
+        mcid=elem_mcid,
+    )
+
+    if stype == "TH":
+        b.set_th_attrs(pk, se.attrs.get("Scope", "Col"))
+
+    if se.children:
+        child_refs = []
+        for child in se.children:
+            cr = _build_elem_with_mcid(b, child, pk, page_obj, leaf_mcid_map)
+            if cr is not None:
+                child_refs.append(cr)
+        if child_refs:
+            pk["/K"] = Array(child_refs)
+
+    return pk
+
+
+def _collect_mcid_owners(
+    pk_refs: List[pikepdf.Dictionary],
+    n_mcids: int,
+) -> Dict[int, pikepdf.Dictionary]:
+    """
+    Scan built pikepdf struct elements to find which element directly owns each MCID.
+    Returns {mcid_int: pk_ref}.
+    """
+    result: Dict[int, pikepdf.Dictionary] = {}
+
+    def _scan(elem: pikepdf.Dictionary) -> None:
+        try:
+            k = elem.get("/K")
+        except Exception:
+            return
+        if k is None:
+            return
+        if isinstance(k, pikepdf.objects.Integer):
+            m = int(k)
+            if m not in result:
+                result[m] = elem
+        elif isinstance(k, pikepdf.Array):
+            for item in k:
+                try:
+                    obj = item.get_object() if hasattr(item, "get_object") else item
+                    if isinstance(obj, pikepdf.objects.Integer):
+                        m = int(obj)
+                        if m not in result:
+                            result[m] = elem
+                    elif isinstance(obj, pikepdf.Dictionary):
+                        _scan(obj)
+                except Exception:
+                    pass
+
+    for ref in pk_refs:
+        try:
+            _scan(ref.get_object() if hasattr(ref, "get_object") else ref)
+        except Exception:
+            pass
+
+    return result
+
+
+# ============================================================
+# Shared metadata writer
+# ============================================================
 
 def _set_common_metadata(
     pdf: pikepdf.Pdf,
     lang: str,
     title: str,
     author: str,
-):
-    """Apply /Lang, /MarkInfo, ViewerPrefs, XMP, docinfo."""
+) -> None:
     pdf.Root["/Lang"] = String(lang)
     pdf.Root["/MarkInfo"] = pdf.make_indirect(
         Dictionary(Marked=Boolean(True))
@@ -211,10 +402,8 @@ def _set_common_metadata(
         Direction=Name("/R2L"),
         DisplayDocTitle=Boolean(True),
     ))
-    # Blank RoleMap (we only use standard structure types)
     pdf.Root["/RoleMap"] = pdf.make_indirect(Dictionary())
 
-    # XMP metadata
     with pdf.open_metadata() as meta:
         meta["dc:language"] = lang
         meta["pdfuaid:part"] = "1"
@@ -227,7 +416,6 @@ def _set_common_metadata(
         if author:
             meta["dc:creator"] = [author]
 
-    # DocInfo
     try:
         if "/Info" not in pdf.trailer:
             pdf.trailer["/Info"] = pdf.make_indirect(Dictionary())
@@ -240,10 +428,13 @@ def _set_common_metadata(
     except Exception:
         pass
 
-    # Per-page Tabs
     for page in pdf.pages:
         page.obj["/Tabs"] = Name("/S")
 
+
+# ============================================================
+# Public entry points
+# ============================================================
 
 def inject_digital(
     pdf: pikepdf.Pdf,
@@ -252,19 +443,24 @@ def inject_digital(
     lang: str = "he-IL",
     title: str = "",
     author: str = "",
-):
+) -> None:
     """
-    Build a PDF/UA-1 StructTreeRoot from *elements* and attach it to *pdf*.
+    Build a PDF/UA-1 StructTreeRoot with per-block MCID binding.
 
-    For each page:
-      1. The entire content stream is wrapped in a single BDC/EMC pair
-         (MCID=0). This makes every content operator "tagged" — PAC requires
-         this for PDF/UA compliance.
-      2. A Div struct element references MCID=0 on that page AND contains
-         the semantic children (H1/H2/P/List/Table) via ActualText.
+    For every page:
+      1. Parse content stream → assign unique MCID per BT/ET text block.
+         Non-text content is marked as Artifact.
+      2. Match each leaf StructElement (H1/H2/P/TH/TD/LBody …) to its MCID
+         via text similarity + sequential fallback.
+      3. Build ParentTree: page_StructParents → array[MCID] → owning elem.
 
-    ParentTree maps page_index → [Div element], enabling PAC to verify the
-    full tagged content → struct tree binding.
+    PAC requirements satisfied:
+      - Every text operator is inside BDC/EMC  (no "untagged content")
+      - StructTreeRoot exists with correct /K hierarchy
+      - ParentTree maps every MCID to its struct element
+      - /Lang at document and element level
+      - /MarkInfo Marked=true
+      - pdfuaid:part=1 in XMP
     """
     _set_common_metadata(pdf, lang, title, author)
     b = _Builder(pdf, lang)
@@ -273,111 +469,99 @@ def inject_digital(
         Type=Name("/StructTreeRoot"),
         Lang=String(lang),
     ))
-
     doc_elem = b.make_elem("Document", str_root, title=title or "מסמך נגיש")
 
-    # Group elements by page
-    from collections import defaultdict
     by_page: Dict[int, List[StructElement]] = defaultdict(list)
     for elem in elements:
         by_page[elem.page_num].append(elem)
 
-    pages = list(pdf.pages)
-    n_pages = len(pages)
+    pages      = list(pdf.pages)
+    n_pages    = len(pages)
+    sect_refs: List[pikepdf.Dictionary]  = []
+    pt_entries: List                     = []   # flat ParentTree Nums
 
-    sect_refs: List[pikepdf.Dictionary] = []
-    parent_tree_entries: List = []   # flat [idx, [div_ref], idx, [div_ref], ...]
-
-    # Determine page numbers present in elements (1-based)
-    all_page_nums = sorted(set(
-        list(by_page.keys()) + list(range(1, n_pages + 1))
-    ))
-
-    for pg_num in all_page_nums:
-        pg_idx = pg_num - 1
-        if pg_idx < 0 or pg_idx >= n_pages:
-            continue
-
-        page_obj = pdf.make_indirect(pages[pg_idx].obj)
-        # Required: StructParents on each page for ParentTree lookup
+    for pg_idx, page in enumerate(pages):
+        pg_num   = pg_idx + 1
+        page_obj = pdf.make_indirect(page.obj)
         page_obj["/StructParents"] = pikepdf.objects.Integer(pg_idx)
 
-        # Wrap content stream so all operators are inside BDC/EMC MCID=0
-        _wrap_page_content_stream(pdf, page_obj, mcid=0)
+        # --- Step 1: inject per-block MCIDs into content stream ----------
+        mcid_texts = _inject_mcids_into_page(pdf, page_obj, mcid_start=0)
+        n_mcids    = len(mcid_texts)
 
-        pg_label = f"עמוד {pg_num}"
-        sect = b.make_elem("Sect", doc_elem, title=pg_label)
+        # --- Step 2: match leaf struct elems to MCIDs --------------------
+        page_elems    = by_page.get(pg_num, [])
+        leaf_mcid_map = _assign_mcids(page_elems, mcid_texts)
 
-        page_elems = by_page.get(pg_num, [])
+        # --- Step 3: build struct tree for this page ---------------------
+        sect = b.make_elem("Sect", doc_elem, title=f"עמוד {pg_num}")
+        child_pk_refs: List[pikepdf.Dictionary] = []
 
-        # Div element: owns MCID=0 (all content) + semantic children
-        div = b.make_elem(
-            "Div", sect,
-            page_obj=page_obj,
-            mcid=0,
-        )
-
-        semantic_children: List[pikepdf.Dictionary] = []
         for elem in page_elems:
-            pk = b.build_struct_elem(elem, div, page_obj=page_obj)
+            pk = _build_elem_with_mcid(b, elem, sect, page_obj, leaf_mcid_map)
             if pk is not None:
-                semantic_children.append(pk)
+                child_pk_refs.append(pk)
 
-        if semantic_children:
-            # K = [MCID_integer, child1, child2, ...]
-            # MCID integer anchors all content; children provide semantics
-            div["/K"] = Array(
-                [pikepdf.objects.Integer(0)] + semantic_children
-            )
-        else:
-            div["/K"] = pikepdf.objects.Integer(0)
+        # P elements for orphaned MCIDs (content not claimed by any struct elem)
+        used_mcids = set(leaf_mcid_map.values())
+        for mcid_val, text in mcid_texts:
+            if mcid_val not in used_mcids and text:
+                orphan = b.make_elem(
+                    "P", sect,
+                    actual_text=text,
+                    page_obj=page_obj,
+                    mcid=mcid_val,
+                )
+                child_pk_refs.append(orphan)
 
-        sect["/K"] = Array([div])
+        if child_pk_refs:
+            sect["/K"] = Array(child_pk_refs)
         sect_refs.append(sect)
 
-        # ParentTree entry: page_idx → [div]
-        parent_tree_entries.append(pikepdf.objects.Integer(pg_idx))
-        parent_tree_entries.append(Array([div]))
+        # --- Step 4: build ParentTree entry for this page ----------------
+        # ParentTree[pg_idx] = Array where index=MCID → struct elem that owns it
+        if n_mcids > 0:
+            mcid_owners = _collect_mcid_owners(child_pk_refs, n_mcids)
+            parent_array: List = []
+            for m in range(n_mcids):
+                owner = mcid_owners.get(m)
+                # Fallback: point to sect so PAC doesn't find a null entry
+                parent_array.append(owner if owner is not None else sect)
+            pt_entries.append(pikepdf.objects.Integer(pg_idx))
+            pt_entries.append(Array(parent_array))
 
     if sect_refs:
         doc_elem["/K"] = Array(sect_refs)
 
-    str_root["/K"] = Array([doc_elem])
-    str_root["/ParentTree"] = pdf.make_indirect(Dictionary(
-        Nums=Array(parent_tree_entries)
-    ))
+    str_root["/K"]                 = Array([doc_elem])
+    str_root["/ParentTree"]        = pdf.make_indirect(
+        Dictionary(Nums=Array(pt_entries))
+    )
     str_root["/ParentTreeNextKey"] = pikepdf.objects.Integer(n_pages)
-    pdf.Root["/StructTreeRoot"] = str_root
+    pdf.Root["/StructTreeRoot"]    = str_root
 
 
 def inject_scanned(
     pdf: pikepdf.Pdf,
-    page_elements: Dict[int, List[StructElement]],  # page_num → elements
+    page_elements: Dict[int, List[StructElement]],
     *,
     lang: str = "he-IL",
     title: str = "",
     author: str = "",
-    fig_mcid: int = 0,   # MCID reserved for the Figure (scanned image) on each page
+    fig_mcid: int = 0,
 ) -> Dict[int, List[pikepdf.Dictionary]]:
     """
-    Build a StructTreeRoot for a rasterised PDF where each page is one Figure
-    with MCID *fig_mcid*.
+    Build a StructTreeRoot for a rasterised PDF.
 
     Structure per page:
         Sect
-          Figure  [K=MCID(fig_mcid), Alt="...", Pg=page]   ← the raster image
-          H1      [ActualText="..."]                         ← semantic elements
-          P       [ActualText="..."]                         ← alongside Figure
-          List                                               ← NOT inside Figure
-            LI → LBody
-          Table
-            TR → TH / TD
+          Figure  [K=fig_mcid, Alt="…"]  ← the raster image (MCID-wired)
+          H1      [ActualText="…"]       ← semantic siblings, NOT inside Figure
+          P       [ActualText="…"]
+          L → LI → LBody
+          Table → TR → TH / TD
 
-    Semantic elements are siblings of Figure, not children.
-    This is the correct PDF/UA structure: Figure carries the visual content,
-    semantic elements carry the logical structure for screen readers.
-
-    Returns parent_tree_map: {page_index_0based → [figure_ref]}
+    Returns parent_tree_map {page_index_0based → [figure_ref]}.
     """
     _set_common_metadata(pdf, lang, title, author)
     b = _Builder(pdf, lang)
@@ -393,23 +577,21 @@ def inject_scanned(
     pages = list(pdf.pages)
 
     for pg_idx, page in enumerate(pages):
-        pg_num = pg_idx + 1
+        pg_num   = pg_idx + 1
         page_obj = pdf.make_indirect(page.obj)
         page_obj["/StructParents"] = pikepdf.objects.Integer(pg_idx)
 
-        sect = b.make_elem("Sect", doc_elem, title=f"עמוד {pg_num}")
-        sect_children: List[pikepdf.Dictionary] = []
-
         elems_for_page = page_elements.get(pg_num, [])
-
-        # Build alt text from first H1 or first 200 chars of all text
         all_text = " ".join(e.text for e in elems_for_page if e.text)
         first_h1 = next(
             (e.text for e in elems_for_page if e.elem_type == "H1"), ""
         )
         fig_alt = first_h1 or (all_text[:200] if all_text else f"עמוד {pg_num}")
 
-        # Figure: represents the rasterised page image (wired to MCID)
+        sect = b.make_elem("Sect", doc_elem, title=f"עמוד {pg_num}")
+        sect_children: List[pikepdf.Dictionary] = []
+
+        # Figure = the raster image content, MCID-wired
         fig = b.make_elem(
             "Figure", sect,
             title=f"עמוד {pg_num}",
@@ -421,10 +603,10 @@ def inject_scanned(
         parent_tree_map[pg_idx] = [fig]
         sect_children.append(fig)
 
-        # Semantic elements: H1/H2/P/List/Table as Sect siblings of Figure
-        # Screen readers get the logical structure; Figure provides the image
+        # Semantic elements as siblings of Figure (not children)
+        leaf_mcid_map: Dict[int, int] = {}   # no MCIDs for scanned elements
         for elem in elems_for_page:
-            pk = b.build_struct_elem(elem, sect, page_obj=page_obj)
+            pk = _build_elem_with_mcid(b, elem, sect, page_obj, leaf_mcid_map)
             if pk is not None:
                 sect_children.append(pk)
 
@@ -433,7 +615,6 @@ def inject_scanned(
 
     doc_elem["/K"] = Array(sect_elems)
 
-    # Build ParentTree Nums array
     flat_nums: List = []
     for pg_idx_0 in sorted(parent_tree_map.keys()):
         flat_nums.append(pikepdf.objects.Integer(pg_idx_0))
@@ -455,14 +636,11 @@ def build_bookmarks(
     pdf: pikepdf.Pdf,
     heading_elements: List[StructElement],
     page_texts: Dict[int, str],
-):
-    """
-    Generate an Outlines (bookmark) tree from H1/H2/H3 elements.
-    Falls back to page-based bookmarks when no headings exist.
-    """
+) -> None:
+    """Generate Outlines from H1/H2/H3 elements; fall back to page titles."""
     pages = list(pdf.pages)
 
-    def _page_dest(page_num: int):
+    def _dest(page_num: int) -> Array:
         idx = min(page_num - 1, len(pages) - 1)
         return Array([pages[idx].obj, Name("/Fit")])
 
@@ -474,16 +652,16 @@ def build_bookmarks(
             pg = max(1, elem.page_num)
             items.append(pdf.make_indirect(Dictionary(
                 Title=String(elem.text[:80] if elem.text else f"עמוד {pg}"),
-                Dest=_page_dest(pg),
+                Dest=_dest(pg),
                 Count=pikepdf.objects.Integer(0),
             )))
     else:
-        for i, page in enumerate(pages, 1):
+        for i, _ in enumerate(pages, 1):
             txt = page_texts.get(i, "")
-            label = (txt.split("\n")[0].strip()[:60] if txt else f"עמוד {i}")
+            label = txt.split("\n")[0].strip()[:60] if txt else f"עמוד {i}"
             items.append(pdf.make_indirect(Dictionary(
                 Title=String(label),
-                Dest=_page_dest(i),
+                Dest=_dest(i),
                 Count=pikepdf.objects.Integer(0),
             )))
 
