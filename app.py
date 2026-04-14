@@ -87,9 +87,11 @@ def login_required(f):
 CORS(app, resources={r"/api/*": {"origins": "*"}})
 
 BASE_DIR = Path(__file__).parent
-UPLOAD_DIR = BASE_DIR / "uploads"
-OUTPUT_DIR = BASE_DIR / "outputs"
-DB_PATH = BASE_DIR / "db" / "history.db"
+# On Railway: use /app/data (persistent Volume). Locally: use BASE_DIR subdirs.
+_DATA_DIR = Path(os.environ.get("DATA_DIR", str(BASE_DIR)))
+UPLOAD_DIR = _DATA_DIR / "uploads"
+OUTPUT_DIR = _DATA_DIR / "outputs"
+DB_PATH    = _DATA_DIR / "db" / "history.db"
 SCRIPT_PATH = BASE_DIR / "scripts" / "build_accessible_pdf.py"
 
 for d in [UPLOAD_DIR, OUTPUT_DIR, BASE_DIR / "db"]:
