@@ -126,6 +126,305 @@ def run_ocr(page_paths, lang_code="he-IL"):
     return texts
 
 
+def _pdf_escape_text(text: str) -> bytes:
+    """Encode text as Latin-1 PDF string literal (for invisible text layer)."""
+    safe = text.encode("latin-1", errors="replace")
+    return safe.replace(b"\\", b"\\\\").replace(b"(", b"\\(").replace(b")", b"\\)")
+
+
+def run_ocr_with_positions(page_paths, lang_code="he-IL"):
+    """
+    Run Tesseract OCR with per-line bounding boxes.
+
+    Returns:
+        page_texts  : Dict[int, str]             — page_num (1-based) → full text
+        page_blocks : Dict[int, List[TextBlock]] — page_num → positioned TextBlocks
+                      (top-down coordinates, same convention as pdfminer extractor)
+    """
+    try:
+        import pytesseract
+        from pytesseract import Output as TessOutput
+        from PIL import Image
+
+        tess_cmd = os.environ.get("TESSERACT_CMD", "")
+        if tess_cmd and os.path.isfile(tess_cmd):
+            pytesseract.pytesseract.tesseract_cmd = tess_cmd
+        pytesseract.get_tesseract_version()
+    except ImportError:
+        print("  OCR: pytesseract לא מותקן")
+        return {}, {}
+    except Exception:
+        print("  OCR: Tesseract לא נמצא")
+        return {}, {}
+
+    _sdir = os.path.dirname(os.path.abspath(__file__))
+    if _sdir not in sys.path:
+        sys.path.insert(0, _sdir)
+    try:
+        from pipeline.models import TextBlock as _TB
+    except ImportError:
+        _TB = None
+
+    lang_map = {"he-IL": "heb+eng", "he": "heb+eng",
+                "ar": "ara+heb", "en-US": "eng", "en": "eng"}
+    tess = lang_map.get(lang_code, "heb+eng")
+
+    page_texts: dict = {}
+    page_blocks: dict = {}
+    print(f"  OCR+מיקום: מריץ Tesseract ({tess}) על {len(page_paths)} עמודים...")
+
+    for i, path in enumerate(page_paths, 1):
+        try:
+            from PIL import Image
+            img   = Image.open(path)
+            iw, ih = img.size
+            dpi_info = img.info.get("dpi", (200, 200))
+            dpi_x    = dpi_info[0] if dpi_info[0] > 0 else 200
+            pts_per_px = 72.0 / dpi_x
+
+            data = pytesseract.image_to_data(
+                img, lang=tess, config="--psm 6",
+                output_type=TessOutput.DICT,
+            )
+
+            n = len(data["text"])
+            lines: dict = {}   # (block_num, par_num, line_num) → line_data
+
+            for j in range(n):
+                if data["level"][j] != 5:   # 5 = word level
+                    continue
+                try:
+                    conf = int(data["conf"][j])
+                except (ValueError, TypeError):
+                    conf = -1
+                if conf < 20:
+                    continue
+                word = str(data["text"][j]).strip()
+                if not word:
+                    continue
+
+                key  = (data["block_num"][j], data["par_num"][j], data["line_num"][j])
+                px_l = int(data["left"][j])
+                px_t = int(data["top"][j])
+                px_r = px_l + int(data["width"][j])
+                px_b = px_t + int(data["height"][j])
+
+                if key not in lines:
+                    lines[key] = {"words": [], "px_l": px_l, "px_t": px_t,
+                                  "px_r": px_r, "px_b": px_b}
+                else:
+                    lines[key]["px_l"] = min(lines[key]["px_l"], px_l)
+                    lines[key]["px_t"] = min(lines[key]["px_t"], px_t)
+                    lines[key]["px_r"] = max(lines[key]["px_r"], px_r)
+                    lines[key]["px_b"] = max(lines[key]["px_b"], px_b)
+                lines[key]["words"].append(word)
+
+            blocks     = []
+            text_parts = []
+            for key in sorted(lines.keys()):
+                ln  = lines[key]
+                txt = " ".join(ln["words"])
+                text_parts.append(txt)
+
+                x = ln["px_l"] * pts_per_px
+                y = ln["px_t"] * pts_per_px          # top-down from page top
+                w = max((ln["px_r"] - ln["px_l"]) * pts_per_px, 1.0)
+                h = max((ln["px_b"] - ln["px_t"]) * pts_per_px, 1.0)
+
+                if _TB:
+                    blocks.append(_TB(
+                        text=txt, x=x, y=y, width=w, height=h,
+                        font_size=max(h * 0.75, 6.0),
+                        is_bold=False,
+                        page_num=i,
+                    ))
+
+            page_texts[i]  = "\n".join(text_parts)
+            page_blocks[i] = blocks
+
+        except Exception as e:
+            print(f"  OCR עמוד {i}: {e}")
+            page_texts[i]  = ""
+            page_blocks[i] = []
+
+    total = sum(len(v) for v in page_blocks.values())
+    found = sum(1 for t in page_texts.values() if t)
+    print(f"  OCR: {found}/{len(page_paths)} עמודים עם טקסט, {total} שורות בסה\"כ")
+    return page_texts, page_blocks
+
+
+def build_image_pdf_with_mcids(page_paths, page_blocks_dict, output_path, stamp=False):
+    """
+    Build an image PDF where each OCR text block has its own per-page BDC/EMC MCID.
+
+    Two phases:
+      Phase 1 — reportlab builds the image-only skeleton (no text layer).
+      Phase 2 — pikepdf post-processes each page:
+                 • Wraps the existing image content stream as /Artifact BDC/EMC
+                 • Appends per-block /P <<MCID n>> BDC … EMC invisible text sections
+                 • Adds Helvetica font resource to each page
+
+    Returns:
+        page_mcid_records : Dict[int, List[tuple]]
+            {page_num (1-based) → [(mcid, text, x, y_topdown, width, height), ...]}
+        MCIDs are per-page (restart at 0 for each page).
+    """
+    import pikepdf
+    from pikepdf import Array, Dictionary, Name, Stream, String
+
+    # ── Phase 1: image-only skeleton ──────────────────────────────────────
+    skel_path = output_path + ".skel.pdf"
+    build_image_pdf(page_paths, {}, skel_path, stamp=False)   # empty page_texts
+
+    # ── Phase 2: add MCID-tagged text overlay ─────────────────────────────
+    page_mcid_records: dict = {}
+
+    with pikepdf.open(skel_path, allow_overwriting_input=False) as pdf:
+        for pg_idx, page in enumerate(pdf.pages):
+            pg_num = pg_idx + 1
+
+            # Page dimensions
+            mb = page.MediaBox
+            pw = float(mb[2]) - float(mb[0])
+            ph = float(mb[3]) - float(mb[1])
+
+            blocks = page_blocks_dict.get(pg_num, [])
+            cs_text_parts: list = []
+            page_records: list = []
+
+            for mcid, blk in enumerate(blocks):
+                # PDF coordinate Y (bottom-up): bottom of text block
+                pdf_y = ph - blk.y - blk.height
+                fs    = max(blk.height * 0.75, 6.0)
+
+                # Latin-1 safe text for the invisible layer; ActualText carries Hebrew
+                safe = _pdf_escape_text(blk.text)
+
+                cs_text_parts.append(f"/P <</MCID {mcid}>> BDC\n".encode())
+                cs_text_parts.append(b"BT\n")
+                cs_text_parts.append(f"/F1 {fs:.1f} Tf\n".encode())
+                cs_text_parts.append(b"3 Tr\n")   # invisible render mode
+                cs_text_parts.append(f"{blk.x:.2f} {max(pdf_y, 1.0):.2f} Td\n".encode())
+                cs_text_parts.append(b"(" + safe + b") Tj\n")
+                cs_text_parts.append(b"ET\n")
+                cs_text_parts.append(b"EMC\n")
+
+                page_records.append((mcid, blk.text, blk.x, blk.y, blk.width, blk.height))
+
+            page_mcid_records[pg_num] = page_records
+
+            if not cs_text_parts:
+                continue
+
+            # Read existing content stream bytes (the image drawing)
+            try:
+                existing_obj = page.obj.get("/Contents")
+                if isinstance(existing_obj, pikepdf.Array):
+                    existing_bytes = b"".join(
+                        s.get_stream_buffer() for s in existing_obj
+                        if hasattr(s, "get_stream_buffer")
+                    )
+                elif existing_obj is not None and hasattr(existing_obj, "get_stream_buffer"):
+                    existing_bytes = bytes(existing_obj.get_stream_buffer())
+                else:
+                    existing_bytes = b""
+            except Exception:
+                existing_bytes = b""
+
+            # New stream: image as Artifact + MCID-tagged text blocks
+            new_cs = (
+                b"/Artifact <</Type /Background /Subtype /Pagination>> BDC\n" +
+                existing_bytes.strip() + b"\n" +
+                b"EMC\n" +
+                b"".join(cs_text_parts)
+            )
+
+            # Add Helvetica font resource to page
+            try:
+                res = page.obj.get("/Resources")
+                if res is None:
+                    page.obj["/Resources"] = Dictionary()
+                    res = page.obj["/Resources"]
+                if "/Font" not in res:
+                    res["/Font"] = Dictionary()
+                if "/F1" not in res["/Font"]:
+                    res["/Font"]["/F1"] = pdf.make_indirect(Dictionary(
+                        Type=Name("/Font"),
+                        Subtype=Name("/Type1"),
+                        BaseFont=Name("/Helvetica"),
+                        Encoding=Name("/WinAnsiEncoding"),
+                    ))
+            except Exception:
+                pass
+
+            # Replace content stream
+            page.obj["/Contents"] = pdf.make_indirect(Stream(pdf, new_cs))
+
+        pdf.save(output_path)
+
+    try:
+        os.unlink(skel_path)
+    except Exception:
+        pass
+
+    total_blocks = sum(len(v) for v in page_mcid_records.values())
+    print(f"  PDF עם MCIDs: {len(page_mcid_records)} עמודים, "
+          f"{total_blocks} בלוקים ממוספרים")
+    return page_mcid_records
+
+
+def validate_structure_gate(elements, doc_type=None):
+    """
+    PAC pre-export gate: check whether structure reconstruction produced
+    meaningful semantic content.
+
+    Returns (passed: bool, message: str, status_override: str)
+      passed          — True if export may be marked 'accessible'
+      message         — human-readable reason (empty if passed)
+      status_override — 'non_compliant' or 'needs_review' when gate fails; '' if passed
+    """
+    _sdir = os.path.dirname(os.path.abspath(__file__))
+    if _sdir not in sys.path:
+        sys.path.insert(0, _sdir)
+    try:
+        from pipeline.classifier import DocumentType
+    except ImportError:
+        DocumentType = None
+
+    total = len(elements)
+    if total == 0:
+        return (False,
+                "לא זוהו אלמנטים — OCR/reconstruction נכשל לחלוטין",
+                "non_compliant")
+
+    semantic_types = {"H1", "H2", "H3", "Table", "L"}
+    sem_count = sum(1 for e in elements if e.elem_type in semantic_types)
+    ratio     = sem_count / total
+
+    has_heading = any(e.elem_type in ("H1", "H2", "H3") for e in elements)
+    has_list    = any(e.elem_type == "L" for e in elements)
+    has_table   = any(e.elem_type == "Table" for e in elements)
+
+    # Type-specific hard gates
+    if DocumentType:
+        if doc_type in (DocumentType.PROTOCOL, DocumentType.LEGAL):
+            if not has_heading:
+                return (False,
+                        f"{'פרוטוקול' if doc_type == DocumentType.PROTOCOL else 'חוק/תקנות'}: "
+                        "לא זוהו כותרות — reconstruction נכשל. "
+                        "המסמך יוצא כ-non_compliant",
+                        "non_compliant")
+
+    # General soft gate: < 8% semantic elements in a non-trivial document
+    if ratio < 0.08 and total >= 8:
+        return (False,
+                f"reconstruction חסר: {sem_count}/{total} אלמנטים סמנטיים "
+                f"({ratio:.0%}) — מתחת לסף 8%. המסמך יוצא כ-needs_review",
+                "needs_review")
+
+    return True, "", ""
+
+
 def _load_stamp_png(png_path, size=150):
     """Load pre-rendered stamp PNG. Returns None on failure."""
     try:
@@ -1167,96 +1466,130 @@ def _report(errors, warnings):
     print('='*60)
 
 
-def process_scanned_pdf(base_pdf, output_pdf, lang="he-IL", title="מסמך נגיש",
-                         author="", page_texts=None, ai_descriptions=None, page_paths=None):
+def process_scanned_pdf(page_paths, output_pdf, lang="he-IL", title="מסמך נגיש",
+                         author="", ai_descriptions=None, stamp=False):
     """
-    Full pipeline for scanned (image-based) PDFs.
+    Full semantic pipeline for scanned (image-based) PDFs.
 
-    Uses the same rule-based StructureDetector as the digital path, then calls
-    inject_scanned() from the pipeline to build a correct PDF/UA-1 StructTreeRoot.
-
-    Structure per page:
-        Sect → Figure [MCID=0, Alt=description] + H1/P/List/Table (siblings)
-
-    The content stream BDC/EMC for MCID=0 is written by patch_stream()
-    (already applied when build_image_pdf creates the base PDF).
+    Steps:
+      1. OCR with per-line bounding boxes (pytesseract.image_to_data)
+      2. Document type classification
+      3. Header/footer artifact detection (inside StructureDetector)
+      4. Specialized structure detection: headings / lists / tables / key-values
+      5. PAC gate: validate reconstruction quality (blocks 'accessible' if failed)
+      6. Build image PDF with per-OCR-block MCID markers in content stream
+      7. Inject semantic StructTreeRoot — MCID per element (not per page)
+      8. Build bookmarks from detected headings
     """
-    import pikepdf, shutil
+    import pikepdf
     from collections import defaultdict
 
     try:
-        import sys as _sys, os as _os
-        _scripts_dir = _os.path.dirname(_os.path.abspath(__file__))
-        if _scripts_dir not in _sys.path:
-            _sys.path.insert(0, _scripts_dir)
+        _sdir = os.path.dirname(os.path.abspath(__file__))
+        if _sdir not in sys.path:
+            sys.path.insert(0, _sdir)
         from pipeline import (
-            extract_blocks, extract_lines, StructureDetector,
-            merge_ai_structure, inject_scanned, build_bookmarks,
+            StructureDetector, merge_ai_structure, build_bookmarks,
             StructValidator,
             DocumentClassifier, DOC_TYPE_LABELS, type_specific_warnings,
+            inject_scanned_semantic,
         )
         _pipeline_ok = True
     except ImportError as _e:
-        print(f"  pipeline import: {_e} — fallback to add_pdfua_tags")
+        print(f"  pipeline import: {_e} — fallback")
         _pipeline_ok = False
 
-    if not _pipeline_ok:
-        add_pdfua_tags(base_pdf, output_pdf, lang=lang, title=title, author=author,
-                       page_texts=page_texts or {}, pdf_type='scanned',
+    if not _pipeline_ok or not page_paths:
+        # Graceful fallback: build basic image PDF with simple metadata tags
+        page_texts = run_ocr(page_paths or [], lang_code=lang)
+        base_tmp   = output_pdf + ".base.pdf"
+        build_image_pdf(page_paths or [], page_texts, base_tmp, stamp=stamp)
+        add_pdfua_tags(base_tmp, output_pdf, lang=lang, title=title, author=author,
+                       page_texts=page_texts, pdf_type="scanned",
                        ai_descriptions=ai_descriptions or {}, page_structures={})
+        try:
+            os.unlink(base_tmp)
+        except Exception:
+            pass
         return
 
-    print("  מנתח מבנה PDF סרוק (pipeline)...")
-    blocks  = extract_blocks(base_pdf)
-    g_lines = extract_lines(base_pdf)
-    print(f"  חולצו {len(blocks)} בלוקי טקסט (OCR), "
-          f"{len(g_lines)} קווים גרפיים")
+    # ── 1. OCR with per-line positions ────────────────────────────────────
+    print("  OCR: מחלץ טקסט עם מיקום...")
+    page_texts, page_blocks = run_ocr_with_positions(page_paths, lang_code=lang)
 
-    # --- Document type classification (use OCR blocks) ---
-    doc_type = DocumentClassifier().classify(blocks)
-    print(f"  סוג מסמך שזוהה: {DOC_TYPE_LABELS.get(doc_type, str(doc_type))}")
+    all_blocks = [b for blks in page_blocks.values() for b in blks]
 
-    elements = StructureDetector().detect(
-        blocks, graphic_lines=g_lines or None, doc_type=doc_type
-    )
+    if not all_blocks:
+        print("  [!] OCR לא חילץ טקסט — בונה PDF בסיסי ללא שכבת מבנה")
+        base_tmp = output_pdf + ".base.pdf"
+        build_image_pdf(page_paths, {}, base_tmp, stamp=stamp)
+        import shutil as _sh
+        _sh.copy2(base_tmp, output_pdf)
+        try:
+            os.unlink(base_tmp)
+        except Exception:
+            pass
+        return
+
+    # ── 2. Document type classification ───────────────────────────────────
+    doc_type = DocumentClassifier().classify(all_blocks)
+    print(f"  סוג מסמך: {DOC_TYPE_LABELS.get(doc_type, str(doc_type))}")
+
+    # ── 3+4. Structure detection (specialized pipeline per type) ──────────
+    elements = StructureDetector().detect(all_blocks, doc_type=doc_type)
     tbl_count  = sum(1 for e in elements if e.elem_type == "Table")
     head_count = sum(1 for e in elements if e.elem_type in ("H1", "H2", "H3"))
     list_count = sum(1 for e in elements if e.elem_type == "L")
     print(f"  זוהו {len(elements)} אלמנטים "
           f"(כותרות: {head_count}, רשימות: {list_count}, טבלאות: {tbl_count})")
 
-    # AI structure merge when available
+    # Optional AI structure merge
     if os.environ.get("ANTHROPIC_API_KEY") and page_paths:
         page_structures = analyze_structure_with_ai(
-            page_paths, page_texts or {}, lang_code=lang)
-        elements = merge_ai_structure(elements, page_structures, lang=lang)
-        print(f"  לאחר מיזוג AI: {len(elements)} אלמנטים")
+            page_paths, page_texts, lang_code=lang)
+        if page_structures:
+            elements = merge_ai_structure(elements, page_structures, lang=lang)
+            print(f"  לאחר מיזוג AI: {len(elements)} אלמנטים")
 
-    # Pre-export validation
-    sv = StructValidator()
+    # Type-specific validation warnings
+    sv         = StructValidator()
     pre_result = sv.validate(elements, lang=lang, title=title)
-    print(f"  ציון מבנה מקדים: {pre_result.score}/100 ({pre_result.status})")
+    print(f"  ציון מבנה: {pre_result.score}/100 ({pre_result.status})")
     for w in pre_result.warnings:
         print(f"  [!] {w}")
     for w in type_specific_warnings(elements, doc_type):
         print(f"  [!] {w}")
 
-    # Build per-page element map
-    by_page = defaultdict(list)
-    for e in elements:
-        by_page[e.page_num].append(e)
+    # ── 5. PAC gate ───────────────────────────────────────────────────────
+    gate_ok, gate_msg, gate_status = validate_structure_gate(elements, doc_type)
+    if not gate_ok:
+        print(f"  [PAC GATE FAIL] {gate_msg}")
 
-    shutil.copy2(base_pdf, output_pdf)
-    with pikepdf.open(output_pdf, allow_overwriting_input=True) as pdf:
-        fix_standard_font_encoding(pdf)
-        inject_scanned(pdf, dict(by_page),
-                       lang=lang, title=title, author=author,
-                       fig_mcid=0)
+    # ── 6. Build image PDF with per-block MCIDs ───────────────────────────
+    base_tmp = output_pdf + ".base.pdf"
+    print("  בונה PDF עם MCID פר בלוק...")
+    page_mcid_records = build_image_pdf_with_mcids(
+        page_paths, page_blocks, base_tmp, stamp=stamp
+    )
+
+    # ── 7. Inject semantic StructTreeRoot ──────────────────────────────────
+    print("  מזריק StructTreeRoot סמנטי (MCID פר אלמנט)...")
+    with pikepdf.open(base_tmp, allow_overwriting_input=False) as pdf:
+        inject_scanned_semantic(
+            pdf, elements, page_mcid_records,
+            lang=lang, title=title, author=author,
+        )
         heading_elems = [e for e in elements if e.elem_type in ("H1", "H2", "H3")]
-        build_bookmarks(pdf, heading_elems, page_texts=page_texts or {})
+        build_bookmarks(pdf, heading_elems, page_texts=page_texts)
         pdf.save(output_pdf)
 
-    print(f"✅ PDF נגיש (pipeline סרוק): {output_pdf}")
+    try:
+        os.unlink(base_tmp)
+    except Exception:
+        pass
+
+    status_label = "נגיש" if gate_ok else gate_status
+    print(f"  PDF ({status_label}): {output_pdf}")
 
 
 def main():
@@ -1327,12 +1660,8 @@ def main():
                 ai_paths = extract_pages(args.input, ai_pages_dir, dpi=72)
                 ai_descriptions = describe_pages_with_ai(ai_paths, lang_code=args.lang)
         else:
-            # Scanned PDF: rasterize + optional OCR
-            if not page_texts and args.ocr:
-                page_paths_tmp = extract_pages(args.input, pages_dir, dpi=args.dpi)
-                page_texts = run_ocr(page_paths_tmp, lang_code=args.lang)
+            # Scanned PDF: rasterize only — OCR+structure handled inside process_scanned_pdf
             page_paths = extract_pages(args.input, pages_dir, dpi=args.dpi)
-            build_image_pdf(page_paths, page_texts, base_pdf, stamp=args.stamp)
 
         if pdf_type == 'digital':
             # WCAG 1.4.5: preserve original text layer.
@@ -1359,13 +1688,13 @@ def main():
                 page_structures=page_structures,
             )
         else:
-            # Scanned PDF — new semantic pipeline
+            # Scanned PDF — semantic pipeline (OCR + per-MCID structure injection)
             process_scanned_pdf(
-                base_pdf, args.output,
+                page_paths if 'page_paths' in dir() else [],
+                args.output,
                 lang=args.lang, title=args.title, author=args.author,
-                page_texts=page_texts,
                 ai_descriptions=ai_descriptions,
-                page_paths=page_paths if 'page_paths' in dir() else [],
+                stamp=args.stamp,
             )
 
         if args.stamp:

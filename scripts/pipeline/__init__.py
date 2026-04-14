@@ -33,7 +33,7 @@ from .detector    import (
     sort_reading_order,
     merge_ai_structure,
 )
-from .tag_builder import inject_digital, inject_scanned, build_bookmarks
+from .tag_builder import inject_digital, inject_scanned, inject_scanned_semantic, build_bookmarks
 from .validator   import StructValidator, FileValidator
 
 __all__ = [
@@ -47,7 +47,7 @@ __all__ = [
     "StructureDetector", "HeadingDetector", "TableDetector",
     "BorderTableDetector", "sort_reading_order", "merge_ai_structure",
     # tag_builder
-    "inject_digital", "inject_scanned", "build_bookmarks",
+    "inject_digital", "inject_scanned", "inject_scanned_semantic", "build_bookmarks",
     # validator
     "StructValidator", "FileValidator",
 ]

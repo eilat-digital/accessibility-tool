@@ -546,6 +546,12 @@ class StructureDetector:
         claimed_ids: Set[int] = set()
         raw_tables: List[dict] = []
 
+        # 0. Header / footer artifact detection — remove repeated positional blocks
+        if len({b.page_num for b in blocks}) >= 3:
+            hf_ids = self._detect_headers_footers(blocks)
+            if hf_ids:
+                blocks = [b for b in blocks if id(b) not in hf_ids]
+
         # 1a. Border-based table detection (most reliable — uses graphic lines)
         if graphic_lines:
             bdt = BorderTableDetector()
@@ -805,6 +811,43 @@ class StructureDetector:
 
         flush_list()
         return elements
+
+    # ------------------------------------------------------------------
+    def _detect_headers_footers(self, blocks: List[TextBlock]) -> Set[int]:
+        """
+        Return id(block) for blocks whose vertical position (quantised to 10 pt)
+        appears near the top or bottom of the page across ≥40% of pages (min 3).
+
+        These are typical running headers / footers / page numbers that should
+        be excluded from semantic structure and treated as Artifacts.
+        """
+        by_page: Dict[int, List[TextBlock]] = defaultdict(list)
+        for b in blocks:
+            by_page[b.page_num].append(b)
+
+        n_pages = len(by_page)
+        min_pages = max(3, int(n_pages * 0.40))
+        GRID = 10.0
+
+        # bucket → {page_num → [block, ...]}
+        bucket_to_pages: Dict[int, Dict[int, List[TextBlock]]] = defaultdict(
+            lambda: defaultdict(list)
+        )
+        for pg, pg_blocks in by_page.items():
+            sorted_pg = sorted(pg_blocks, key=lambda b: b.y)
+            # Only look at the first 3 and last 3 blocks per page
+            for blk in sorted_pg[:3] + sorted_pg[-3:]:
+                bucket = int(blk.y / GRID)
+                bucket_to_pages[bucket][pg].append(blk)
+
+        artifact_ids: Set[int] = set()
+        for page_map in bucket_to_pages.values():
+            if len(page_map) >= min_pages:
+                for blk_list in page_map.values():
+                    for blk in blk_list:
+                        artifact_ids.add(id(blk))
+
+        return artifact_ids
 
     # ------------------------------------------------------------------
     def _group_name_lists(self, elements: List[StructElement]) -> List[StructElement]:

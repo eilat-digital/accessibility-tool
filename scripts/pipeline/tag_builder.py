@@ -705,6 +705,97 @@ def inject_scanned(
     return parent_tree_map
 
 
+def inject_scanned_semantic(
+    pdf: pikepdf.Pdf,
+    elements: List[StructElement],
+    page_mcid_records: Dict[int, List[tuple]],
+    *,
+    lang: str = "he-IL",
+    title: str = "",
+    author: str = "",
+) -> None:
+    """
+    Build a PDF/UA-1 StructTreeRoot for scanned PDFs where each OCR text block
+    in the content stream already has its own BDC/EMC MCID marker.
+
+    page_mcid_records maps page_num (1-based) → list of
+        (mcid, text, x, y_topdown, width, height)
+    MCIDs are per-page (restart at 0 for each page).
+
+    Flow:
+      1. For each page, convert records to (mcid, text) pairs.
+      2. Run _assign_mcids() to match leaf StructElements to MCIDs by text.
+      3. Build struct tree using _build_elem_with_mcid().
+      4. Collect MCID owners with _collect_mcid_owners() for the ParentTree.
+    """
+    _set_common_metadata(pdf, lang, title, author)
+    b = _Builder(pdf, lang)
+
+    str_root = pdf.make_indirect(Dictionary(
+        Type=Name("/StructTreeRoot"),
+        Lang=String(lang),
+    ))
+    doc_elem = b.make_elem("Document", str_root, title=title or "מסמך נגיש")
+
+    # Group elements by page (1-based)
+    by_page: Dict[int, List[StructElement]] = defaultdict(list)
+    for e in elements:
+        by_page[e.page_num].append(e)
+
+    pages = list(pdf.pages)
+    parent_tree_nums: List = []
+    sect_elems: List[pikepdf.Dictionary] = []
+
+    for pg_idx, page in enumerate(pages):
+        pg_num = pg_idx + 1
+        page_obj = pdf.make_indirect(page.obj)
+        page_obj["/StructParents"] = pikepdf.objects.Integer(pg_idx)
+
+        page_elems   = by_page.get(pg_num, [])
+        mcid_records = page_mcid_records.get(pg_num, [])
+
+        # (mcid, text) pairs for matching
+        mcid_texts = [(rec[0], rec[1]) for rec in mcid_records]
+        n_mcids    = (max(rec[0] for rec in mcid_records) + 1) if mcid_records else 0
+
+        # Match leaf elements to MCIDs via text similarity
+        leaf_mcid_map = _assign_mcids(page_elems, mcid_texts)
+
+        sect = b.make_elem("Sect", doc_elem, title=f"עמוד {pg_num}")
+        sect_children: List[pikepdf.Dictionary] = []
+
+        for elem in page_elems:
+            pk = _build_elem_with_mcid(b, elem, sect, page_obj, leaf_mcid_map)
+            if pk is not None:
+                sect_children.append(pk)
+
+        sect["/K"] = Array(sect_children) if sect_children else Array([])
+        sect_elems.append(sect)
+
+        if n_mcids == 0:
+            continue
+
+        # ParentTree entry: array[mcid] → struct element that owns it
+        mcid_owners = _collect_mcid_owners(sect_children, n_mcids)
+        pt_array: List = []
+        for mcid in range(n_mcids):
+            owner = mcid_owners.get(mcid)
+            # Unmatched MCID → point to the page Sect (graceful fallback)
+            pt_array.append(owner if owner is not None else sect)
+
+        parent_tree_nums.append(pikepdf.objects.Integer(pg_idx))
+        parent_tree_nums.append(pdf.make_indirect(Array(pt_array)))
+
+    doc_elem["/K"] = Array(sect_elems)
+
+    str_root["/ParentTree"] = pdf.make_indirect(Dictionary(
+        Nums=Array(parent_tree_nums),
+    ))
+    str_root["/ParentTreeNextKey"] = pikepdf.objects.Integer(len(pages))
+    str_root["/K"] = Array([doc_elem])
+    pdf.Root["/StructTreeRoot"] = str_root
+
+
 def build_bookmarks(
     pdf: pikepdf.Pdf,
     heading_elements: List[StructElement],
