@@ -6,6 +6,8 @@ build_accessible_pdf.py — v3
 # --- דגל זמני: כפה OCR גם על PDF ממחשב (לצורך דיבוג) ---
 FORCE_OCR = True
 
+print("RUNNING REAL OCR SCRIPT PATH:", __file__, flush=True)
+
 import argparse
 import json
 import os
