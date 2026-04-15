@@ -950,8 +950,7 @@ def internal_ocr():
                     line_words[key].append(word)
                     confs.append(conf)
             ordered_lines = [' '.join(line_words[k]) for k in sorted(line_words.keys())]
-            from bidi.algorithm import get_display
-            text = '\n'.join([get_display(line) for line in ordered_lines])
+            text = '\n'.join(ordered_lines)
             page_conf = (sum(confs) / len(confs) / 100.0) if confs else 0.0
             # DEBUG: הדפס 100 תווים ראשונים לכל עמוד
             print(f"[OCR DEBUG] עמוד {page_idx}: {repr(text[:100])}", flush=True)
