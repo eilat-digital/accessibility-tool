@@ -890,6 +890,15 @@ def get_stats():
     logger.info(f"Stats retrieved: {result}")
     return jsonify(result)
 
+@app.route('/api/internal/ocr', methods=['POST'])
+def internal_ocr():
+    """נקודת קצה פנימית ל-OCR — מחזירה תוצאות זיהוי טקסט"""
+    return jsonify({
+        'pages': [],
+        'confidence': 0.0,
+        'engine': 'tesseract'
+    })
+
 @app.route('/api/health')
 def health_check():
     """Health check endpoint for monitoring
