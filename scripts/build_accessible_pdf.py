@@ -1857,6 +1857,13 @@ def main():
                         page_structures = analyze_structure_with_ai(
                             ai_paths, page_texts, lang_code=args.lang)
 
+            # FORCE_OCR=True skips the shutil.copy2 above, leaving base_pdf absent.
+            # Guard: ensure base_pdf exists before handing it to process_digital_pdf.
+            if not os.path.isfile(base_pdf):
+                import shutil as _sh_guard
+                _sh_guard.copy2(args.input, base_pdf)
+                print("  PDF ממחשב: שמירת בסיס (fallback — FORCE_OCR עקף העתקה)")
+
             process_digital_pdf(
                 base_pdf, args.output,
                 lang=args.lang, title=args.title, author=args.author,
