@@ -87,9 +87,11 @@ def login_required(f):
 CORS(app, resources={r"/api/*": {"origins": "*"}})
 
 BASE_DIR = Path(__file__).parent
-UPLOAD_DIR = BASE_DIR / "uploads"
-OUTPUT_DIR = BASE_DIR / "outputs"
-DB_PATH = BASE_DIR / "db" / "history.db"
+# On Railway: use /app/data (persistent Volume). Locally: use BASE_DIR subdirs.
+_DATA_DIR = Path(os.environ.get("DATA_DIR", str(BASE_DIR)))
+UPLOAD_DIR = _DATA_DIR / "uploads"
+OUTPUT_DIR = _DATA_DIR / "outputs"
+DB_PATH    = _DATA_DIR / "db" / "history.db"
 SCRIPT_PATH = BASE_DIR / "scripts" / "build_accessible_pdf.py"
 
 for d in [UPLOAD_DIR, OUTPUT_DIR, BASE_DIR / "db"]:
@@ -298,7 +300,6 @@ def convert_email_to_pdf(input_path: Path, work_dir: Path) -> Path:
             html_content = _email_to_html(subject, from_addr, to_addr, date_str, body)
         except ImportError:
             logger.warning("extract-msg לא מותקן — מנסה LibreOffice ישירות עבור .msg")
-            # Fallback: LibreOffice יכול לפתוח .msg ישירות
             return convert_to_pdf(input_path, work_dir)
         except Exception as e:
             logger.warning(f"extract-msg נכשל ({e}) — מנסה LibreOffice")
@@ -307,7 +308,6 @@ def convert_email_to_pdf(input_path: Path, work_dir: Path) -> Path:
     if html_content is None:
         raise Exception(f'לא ניתן להמיר קובץ מסוג {ext}')
 
-    # ── המרת HTML → PDF דרך LibreOffice ─────────────────────────
     import shutil
     html_path = work_dir / (input_path.stem + '_email.html')
     html_path.write_text(html_content, encoding='utf-8')
@@ -343,18 +343,17 @@ def validate_pdf_accessibility(pdf_path):
         import pikepdf
 
         score_data = {
-            'has_text_content': 0,   # 35 — שכבת טקסט קריאה (OCR / דיגיטלי)
-            'has_struct_tree': 0,    # 25 — תיוג מבנה PDF/UA
-            'has_lang': 0,           # 20 — שפת המסמך מוגדרת
-            'has_title': 0,          # 10 — כותרת מוגדרת
-            'has_pdfua_id': 0,       #  5 — מזהה PDF/UA-1 ב-XMP
-            'has_markinfo': 0,       #  5 — MarkInfo/Marked=true
+            'has_text_content': 0,
+            'has_struct_tree': 0,
+            'has_lang': 0,
+            'has_title': 0,
+            'has_pdfua_id': 0,
+            'has_markinfo': 0,
         }
 
         with pikepdf.open(pdf_path) as pdf:
             total_pages = len(pdf.pages)
 
-            # בדיקת טקסט — pdfminer מחלץ טקסט בפועל (לא רק קיום stream)
             try:
                 from pdfminer.high_level import extract_text
                 sample_pages = list(range(min(3, total_pages)))
@@ -362,9 +361,8 @@ def validate_pdf_accessibility(pdf_path):
                 if len(text_sample.strip()) > 20:
                     score_data['has_text_content'] = 35
                 elif len(text_sample.strip()) > 5:
-                    score_data['has_text_content'] = 15  # טקסט חלקי
+                    score_data['has_text_content'] = 15
             except Exception:
-                # fallback: בדוק אם יש אופרטורי טקסט ב-stream
                 for page in pdf.pages[:min(3, total_pages)]:
                     try:
                         raw_obj = page.obj.get('/Contents')
@@ -376,33 +374,27 @@ def validate_pdf_accessibility(pdf_path):
                             raw = b''.join(x.read_bytes() for x in raw_obj if hasattr(x, 'read_bytes'))
                         else:
                             raw = b''
-                        # אופרטורי טקסט ב-PDF: Tj, TJ, Tf
                         if b'Tj' in raw or b'TJ' in raw:
                             score_data['has_text_content'] = 35
                             break
                     except Exception:
                         pass
 
-            # בדיקת תיוג מבנה PDF/UA
             if '/StructTreeRoot' in pdf.Root:
                 score_data['has_struct_tree'] = 25
 
-            # בדיקת שפה — ב-Root (PDF/UA דרישה ראשית)
             root_lang = str(pdf.Root.get('/Lang', '')).strip()
             if root_lang:
                 score_data['has_lang'] = 20
             else:
-                # fallback: Lang ב-docinfo (לא מספיק ל-PDF/UA אבל חלקי)
                 meta_lang = str(pdf.docinfo.get('/Lang', '')).strip()
                 if meta_lang:
                     score_data['has_lang'] = 10
 
-            # בדיקת כותרת
             meta = pdf.docinfo
             if str(meta.get('/Title', '')).strip():
                 score_data['has_title'] = 10
 
-            # בדיקת מזהה PDF/UA-1 ב-XMP — ISO 14289-1 §6.2
             try:
                 with pdf.open_metadata() as xmp:
                     pdfua_part = xmp.get('pdfuaid:part', '')
@@ -411,7 +403,6 @@ def validate_pdf_accessibility(pdf_path):
             except Exception:
                 pass
 
-            # בדיקת MarkInfo/Marked = true — PDF/UA §7.3
             mark_info = pdf.Root.get('/MarkInfo')
             if mark_info is not None:
                 marked = mark_info.get('/Marked')
@@ -420,13 +411,12 @@ def validate_pdf_accessibility(pdf_path):
 
         total_score = min(100, sum(score_data.values()))
 
-        # מיפוי לתקן IS 5568
         if total_score >= 85:
-            compliance_status = 'compliant'          # עומד בתקן
+            compliance_status = 'compliant'
         elif total_score >= 60:
-            compliance_status = 'needs_review'       # דורש בדיקה
+            compliance_status = 'needs_review'
         else:
-            compliance_status = 'non_compliant'      # אינו עומד בתקן
+            compliance_status = 'non_compliant'
 
         report = {
             'score': total_score,
@@ -456,7 +446,6 @@ def process_pdf(job_id, input_path, output_path, original_name, file_size):
         jobs[job_id] = {'status': 'processing', 'progress': 10}
         log_operation(job_id, 'start', 'in_progress')
 
-        # Count pages first
         logger.info(f"Analyzing PDF pages for job {job_id}")
         result = subprocess.run(
             [PYTHON, '-c',
@@ -468,14 +457,11 @@ def process_pdf(job_id, input_path, output_path, original_name, file_size):
         log_operation(job_id, 'count_pages', 'success', f'Pages: {pages}')
         logger.info(f"File has {pages} pages")
 
-        # Extract title from filename
         title = Path(original_name).stem.replace('-', ' ').replace('_', ' ')
 
-        # DPI דינמי לפי מספר עמודים — שומר על זיכרון Railway (512 MB)
         dpi = str(dpi_for_pages(pages))
         logger.info(f"Using DPI: {dpi} for job {job_id} ({pages} pages)")
 
-        # Run accessibility script
         logger.info(f"Running accessibility script for job {job_id}")
         cmd = [
             PYTHON, str(SCRIPT_PATH),
@@ -486,27 +472,34 @@ def process_pdf(job_id, input_path, output_path, original_name, file_size):
             '--author', 'עיריית אילת',
             '--dpi', dpi,
             '--stamp',
-            '--ocr',   # IS 5568: scanned PDFs must have a text layer for screen readers
+            '--ocr',
         ]
         jobs[job_id]['progress'] = 50
 
-        # Timeout דינמי: 5 דקות בסיס + 4 שניות לעמוד (OCR איטי)
-        # מינימום 5 דק', מקסימום 60 דק' (מסמך 300 עמודים ≈ 20 דק')
         timeout_seconds = max(300, min(3600, 300 + pages * 4))
         logger.info(f"Processing timeout set to {timeout_seconds}s for {pages} pages")
-        
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_seconds)
+
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds
+        )
         jobs[job_id]['progress'] = 90
+
+        logger.info(f"[OCR DEBUG] SCRIPT_PATH={SCRIPT_PATH}")
+        logger.info(f"[OCR DEBUG] CMD={' '.join(map(str, cmd))}")
+        logger.info(f"[OCR DEBUG] returncode={proc.returncode}")
+        logger.info(f"[OCR DEBUG] stdout={proc.stdout[:4000]}")
+        logger.info(f"[OCR DEBUG] stderr={proc.stderr[:4000]}")
 
         if proc.returncode != 0:
             error_msg = (proc.stderr or proc.stdout or "שגיאה בעיבוד הקובץ").strip()
             logger.error(f"Script error for job {job_id}: stdout={proc.stdout!r} stderr={proc.stderr!r}")
             raise Exception(error_msg)
 
-        # Calculate processing time
         processing_time = (now_il() - start_time).total_seconds()
         
-        # Define accessibility features applied
         accessibility_features = [
             "OCR - זיהוי טקסט",
             "תיוג PDF/UA",
@@ -515,11 +508,9 @@ def process_pdf(job_id, input_path, output_path, original_name, file_size):
             "שפה: עברית"
         ]
         
-        # Validate the generated PDF
         logger.info(f"Validating PDF for job {job_id}")
         validation_report = validate_pdf_accessibility(str(output_path))
 
-        # Update DB with comprehensive information
         logger.info(f"Updating database for job {job_id}")
         with get_db() as conn:
             conn.execute(
@@ -542,7 +533,6 @@ def process_pdf(job_id, input_path, output_path, original_name, file_size):
         log_operation(job_id, 'complete', 'success', f'Time: {processing_time:.1f}s, Score: {validation_report["score"]}')
         logger.info(f"Successfully completed job {job_id} with accessibility score {validation_report['score']}")
 
-        # Background: extract semantic structure for Review UI
         threading.Thread(
             target=_extract_and_store_structure,
             args=(job_id, str(output_path)),
@@ -564,7 +554,6 @@ def process_pdf(job_id, input_path, output_path, original_name, file_size):
         if Path(input_path).exists():
             os.remove(input_path)
 
-
 # -- Routes --
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -584,29 +573,20 @@ def login():
     next_page = request.args.get('next', '/')
     return render_template('login.html', error=error, next=next_page)
 
-
 @app.route('/logout')
 def logout():
     session.clear()
     return redirect(url_for('login'))
 
-
 @app.route('/')
 @login_required
 def index():
-    """Serve the main application interface"""
     logger.info("Serving index page")
     return render_template('index.html')
 
 @app.route('/api/upload', methods=['POST'])
 @login_required
 def upload():
-    """Upload a PDF file for accessibility processing
-    
-    Returns:
-        - 200: {job_id: str} - Job ID for tracking
-        - 400: {error: str} - Validation error
-    """
     if 'file' not in request.files:
         msg = 'לא נבחר קובץ'
         logger.warning(f"Upload attempt without file: {request.remote_addr}")
@@ -620,30 +600,25 @@ def upload():
         logger.warning(f"Upload attempt with unsupported type: {file.filename}")
         return jsonify({'error': msg}), 400
 
-    # Get file size
-    file.seek(0, 2)  # Seek to end
+    file.seek(0, 2)
     file_size = file.tell()
-    file.seek(0)  # Seek back to start
+    file.seek(0)
     
-    # Validate file size (max 200MB)
     max_size = 200 * 1024 * 1024
     if file_size > max_size:
         msg = f'קובץ גדול מדי. גודל מרבי: 200MB, הקובץ שלך: {file_size / (1024*1024):.1f}MB'
         logger.warning(f"Upload attempt with oversized file: {file.filename} ({file_size} bytes)")
         return jsonify({'error': msg}), 400
     
-    # Warn if file is large (will take longer)
     if file_size > 50 * 1024 * 1024:
         logger.info(f"Large file upload: {file.filename} ({file_size/(1024*1024):.1f}MB) - will use optimized settings")
 
     job_id = str(uuid.uuid4())
-    # שמירה עם הסיומת המקורית כדי ש-LibreOffice/extract-msg ידעו את הפורמט
     input_path = UPLOAD_DIR / f"{job_id}_input{ext}"
     output_path = OUTPUT_DIR / f"{job_id}_accessible.pdf"
 
     file.save(input_path)
 
-    # המרה ל-PDF אם נדרש
     if ext != '.pdf':
         try:
             logger.info(f"Converting {ext} to PDF for job {job_id}")
@@ -658,7 +633,6 @@ def upload():
             logger.error(f"Conversion failed for job {job_id}: {conv_err}")
             return jsonify({'error': str(conv_err)}), 500
 
-    # בדיקת מספר עמודים לפני עיבוד
     try:
         import pikepdf as _pk
         with _pk.open(input_path) as _pdf:
@@ -682,7 +656,6 @@ def upload():
         )
         conn.commit()
 
-    # Start background processing
     thread = threading.Thread(
         target=process_pdf,
         args=(job_id, input_path, output_path, file.filename, file_size)
@@ -696,29 +669,12 @@ def upload():
 @app.route('/api/status/<job_id>')
 @login_required
 def status(job_id):
-    """Get processing status and progress for a job
-    
-    Args:
-        job_id: UUID of the processing job
-    
-    Returns:
-        {status: str, progress: int, error?: str}
-    """
     job = jobs.get(job_id, {'status': 'processing', 'progress': 5})
     return jsonify(job)
 
 @app.route('/api/document/<job_id>')
 @login_required
 def get_document(job_id):
-    """Get detailed information about a processed document
-    
-    Args:
-        job_id: UUID of the document
-    
-    Returns:
-        - 200: Document metadata including accessibility features
-        - 404: Document not found
-    """
     logger.info(f"Fetching document details for job {job_id}")
     with get_db() as conn:
         row = conn.execute("SELECT * FROM documents WHERE id=?", (job_id,)).fetchone()
@@ -736,15 +692,6 @@ def get_document(job_id):
 @app.route('/api/download/<job_id>')
 @login_required
 def download(job_id):
-    """Download the processed accessible PDF file
-    
-    Args:
-        job_id: UUID of the document
-    
-    Returns:
-        - 200: PDF file
-        - 404: Document not found or not ready
-    """
     logger.info(f"Download requested for job {job_id}")
     with get_db() as conn:
         row = conn.execute("SELECT * FROM documents WHERE id=?", (job_id,)).fetchone()
@@ -771,11 +718,6 @@ def download(job_id):
 @app.route('/api/history')
 @login_required
 def history():
-    """Get list of all documents with processing history
-    
-    Returns:
-        [{document metadata}] - Last 100 documents
-    """
     with get_db() as conn:
         rows = conn.execute(
             "SELECT * FROM documents ORDER BY created_at DESC LIMIT 100"
@@ -794,14 +736,6 @@ def history():
 @app.route('/api/delete/<job_id>', methods=['DELETE'])
 @login_required
 def delete(job_id):
-    """Delete a document and its processed output
-    
-    Args:
-        job_id: UUID of the document
-    
-    Returns:
-        {ok: bool}
-    """
     logger.info(f"Delete requested for job {job_id}")
     with get_db() as conn:
         row = conn.execute("SELECT output_path FROM documents WHERE id=?", (job_id,)).fetchone()
@@ -819,14 +753,6 @@ def delete(job_id):
 @app.route('/api/validate/<job_id>')
 @login_required
 def validate(job_id):
-    """Get accessibility validation report for a processed document
-    
-    Args:
-        job_id: UUID of the document
-    
-    Returns:
-        {score: 0-100, status: compliant|needs_review|error, components: {...}}
-    """
     logger.info(f"Validation requested for job {job_id}")
     with get_db() as conn:
         row = conn.execute(
@@ -848,11 +774,6 @@ def validate(job_id):
 @app.route('/api/stats')
 @login_required
 def get_stats():
-    """Get aggregate statistics about processed documents
-    
-    Returns:
-        {total: int, successful: int, success_rate: float, total_pages: int, total_size: int, today_count: int}
-    """
     with get_db() as conn:
         stats = conn.execute("""
             SELECT 
@@ -888,13 +809,16 @@ def get_stats():
     logger.info(f"Stats retrieved: {result}")
     return jsonify(result)
 
+@app.route('/api/internal/ocr', methods=['POST'])
+def internal_ocr():
+    return jsonify({
+        'pages': [],
+        'confidence': 0.0,
+        'engine': 'tesseract'
+    })
+
 @app.route('/api/health')
 def health_check():
-    """Health check endpoint for monitoring
-    
-    Returns:
-        {status: 'ok', timestamp: str, version: str}
-    """
     return jsonify({
         'status': 'ok',
         'timestamp': now_il().isoformat(),
@@ -909,10 +833,6 @@ def health_check():
 
 @app.route('/api/docs')
 def api_docs():
-    """API Documentation endpoint
-    
-    Returns HTML with API endpoint documentation
-    """
     docs_html = """
     <!DOCTYPE html>
     <html lang="he" dir="rtl">
@@ -995,10 +915,6 @@ def api_docs():
 # ── Structure Review API ──────────────────────────────────────────────────
 
 def _pipeline_extract_structure(pdf_path: str) -> list:
-    """
-    Run the pipeline on a PDF and return a serialisable structure list.
-    Works for born-digital PDFs; returns [] for image-only files.
-    """
     try:
         import sys as _sys
         _scripts = os.path.join(os.path.dirname(__file__), "scripts")
@@ -1024,7 +940,6 @@ def _pipeline_extract_structure(pdf_path: str) -> list:
 
 
 def _deserialize_structure(data: list):
-    """Convert JSON list back to List[StructElement]."""
     try:
         import sys as _sys
         _scripts = os.path.join(os.path.dirname(__file__), "scripts")
@@ -1048,7 +963,6 @@ def _deserialize_structure(data: list):
 
 
 def _extract_and_store_structure(job_id: str, output_path: str):
-    """Background task: extract structure from processed PDF and store in DB."""
     try:
         struct = _pipeline_extract_structure(output_path)
         if struct:
@@ -1065,7 +979,6 @@ def _extract_and_store_structure(job_id: str, output_path: str):
 
 def _reexport_with_structure(job_id: str, pdf_path: str, struct_data: list,
                               title: str = "מסמך נגיש", lang: str = "he-IL"):
-    """Re-inject corrected tag tree into existing PDF, in-place."""
     try:
         import pikepdf, shutil, sys as _sys
         _scripts = os.path.join(os.path.dirname(__file__), "scripts")
@@ -1097,11 +1010,9 @@ def _reexport_with_structure(job_id: str, pdf_path: str, struct_data: list,
     except Exception as exc:
         logger.error(f"Re-export failed for {job_id}: {exc}")
 
-
 @app.route("/api/structure/<job_id>", methods=["GET"])
 @login_required
 def get_structure(job_id):
-    """Return the detected semantic structure of a completed document."""
     with get_db() as conn:
         row = conn.execute(
             "SELECT status, structure_json, output_path FROM documents WHERE id=?",
@@ -1113,7 +1024,6 @@ def get_structure(job_id):
     if row["status"] != "done":
         return jsonify({"error": "המסמך עדיין בעיבוד"}), 409
 
-    # Lazy extraction: if not stored yet, run now
     if not row["structure_json"] and row["output_path"]:
         struct = _pipeline_extract_structure(row["output_path"])
         if struct:
@@ -1129,11 +1039,9 @@ def get_structure(job_id):
     struct = json.loads(row["structure_json"]) if row["structure_json"] else []
     return jsonify({"structure": struct})
 
-
 @app.route("/api/structure/<job_id>", methods=["PUT"])
 @login_required
 def save_structure(job_id):
-    """Accept corrected structure JSON, store it, and trigger async re-export."""
     body = request.get_json(silent=True)
     if not body or "structure" not in body:
         return jsonify({"error": "מבנה לא תקין"}), 400
@@ -1149,7 +1057,6 @@ def save_structure(job_id):
     if not row:
         return jsonify({"error": "לא נמצא"}), 404
 
-    # Persist updated structure
     with get_db() as conn:
         conn.execute(
             "UPDATE documents SET structure_json=? WHERE id=?",
@@ -1157,7 +1064,6 @@ def save_structure(job_id):
         )
         conn.commit()
 
-    # Async re-export if file exists
     output_path = row["output_path"]
     if output_path and Path(output_path).exists():
         title = Path(row["original_name"]).stem.replace("-", " ").replace("_", " ")
@@ -1172,7 +1078,6 @@ def save_structure(job_id):
 
     return jsonify({"ok": True, "reexporting": False,
                     "message": "המבנה נשמר (קובץ לא נמצא לעיבוד מחדש)"})
-
 
 if __name__ == '__main__':
     logger.info("Starting accessibility tool server")
