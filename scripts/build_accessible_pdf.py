@@ -6,6 +6,8 @@ build_accessible_pdf.py — v3
 import argparse
 import json
 import os
+import re
+import statistics
 import sys
 import tempfile
 
@@ -24,6 +26,11 @@ def ensure_deps():
 
 
 STAMP_PNG_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static", "accessibility_stamp.png")
+
+OCR_CONFIDENCE_THRESHOLD = 0.62
+OCR_BAD_CHAR_RATIO_THRESHOLD = 0.22
+OCR_GIBBERISH_RATIO_THRESHOLD = 0.35
+OCR_MIN_AVG_CHARS_PER_PAGE = 24
 
 FONT_CANDIDATES = [
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
@@ -132,6 +139,51 @@ def _pdf_escape_text(text: str) -> bytes:
     return safe.replace(b"\\", b"\\\\").replace(b"(", b"\\(").replace(b")", b"\\)")
 
 
+def _ocr_bad_char_ratio(text: str) -> float:
+    chars = [c for c in text if not c.isspace()]
+    if not chars:
+        return 1.0
+    bad = sum(1 for c in chars if c == "\ufffd" or ord(c) < 32 or c in "{}[]<>|~^`")
+    return bad / len(chars)
+
+
+def _ocr_gibberish_ratio(text: str) -> float:
+    words = re.findall(r"\S+", text)
+    if not words:
+        return 1.0
+    gibberish = 0
+    for word in words:
+        clean = re.sub(r"[\W_]+", "", word, flags=re.UNICODE)
+        if not clean:
+            gibberish += 1
+            continue
+        letters = sum(1 for c in clean if c.isalpha())
+        digits = sum(1 for c in clean if c.isdigit())
+        if letters + digits < max(2, len(clean) * 0.45):
+            gibberish += 1
+    return gibberish / len(words)
+
+
+def _ocr_quality(page_texts: dict, confidences: list, page_count: int) -> dict:
+    text = "\n".join(t for t in page_texts.values() if t)
+    avg_conf = (statistics.mean(confidences) / 100.0) if confidences else 0.0
+    return {
+        "avg_confidence": avg_conf,
+        "bad_char_ratio": _ocr_bad_char_ratio(text),
+        "gibberish_ratio": _ocr_gibberish_ratio(text),
+        "avg_chars_per_page": (len(text.strip()) / max(page_count, 1)),
+    }
+
+
+def _ocr_quality_ok(quality: dict) -> bool:
+    return (
+        quality.get("avg_confidence", 0.0) >= OCR_CONFIDENCE_THRESHOLD and
+        quality.get("bad_char_ratio", 1.0) <= OCR_BAD_CHAR_RATIO_THRESHOLD and
+        quality.get("gibberish_ratio", 1.0) <= OCR_GIBBERISH_RATIO_THRESHOLD and
+        quality.get("avg_chars_per_page", 0.0) >= OCR_MIN_AVG_CHARS_PER_PAGE
+    )
+
+
 def run_ocr_with_positions(page_paths, lang_code="he-IL"):
     """
     Run Tesseract OCR with per-line bounding boxes.
@@ -152,10 +204,10 @@ def run_ocr_with_positions(page_paths, lang_code="he-IL"):
         pytesseract.get_tesseract_version()
     except ImportError:
         print("  OCR: pytesseract לא מותקן")
-        return {}, {}
+        return {}, {}, {}
     except Exception:
         print("  OCR: Tesseract לא נמצא")
-        return {}, {}
+        return {}, {}, {}
 
     _sdir = os.path.dirname(os.path.abspath(__file__))
     if _sdir not in sys.path:
@@ -171,6 +223,7 @@ def run_ocr_with_positions(page_paths, lang_code="he-IL"):
 
     page_texts: dict = {}
     page_blocks: dict = {}
+    all_confidences = []
     print(f"  OCR+מיקום: מריץ Tesseract ({tess}) על {len(page_paths)} עמודים...")
 
     for i, path in enumerate(page_paths, 1):
@@ -197,6 +250,8 @@ def run_ocr_with_positions(page_paths, lang_code="he-IL"):
                     conf = int(data["conf"][j])
                 except (ValueError, TypeError):
                     conf = -1
+                if conf >= 0:
+                    all_confidences.append(conf)
                 if conf < 20:
                     continue
                 word = str(data["text"][j]).strip()
@@ -249,8 +304,9 @@ def run_ocr_with_positions(page_paths, lang_code="he-IL"):
 
     total = sum(len(v) for v in page_blocks.values())
     found = sum(1 for t in page_texts.values() if t)
+    quality = _ocr_quality(page_texts, all_confidences, len(page_paths))
     print(f"  OCR: {found}/{len(page_paths)} עמודים עם טקסט, {total} שורות בסה\"כ")
-    return page_texts, page_blocks
+    return page_texts, page_blocks, quality
 
 
 def build_image_pdf_with_mcids(page_paths, page_blocks_dict, output_path, stamp=False):
@@ -1515,9 +1571,18 @@ def process_scanned_pdf(page_paths, output_pdf, lang="he-IL", title="מסמך נ
 
     # ── 1. OCR with per-line positions ────────────────────────────────────
     print("  OCR: מחלץ טקסט עם מיקום...")
-    page_texts, page_blocks = run_ocr_with_positions(page_paths, lang_code=lang)
+    page_texts, page_blocks, ocr_quality = run_ocr_with_positions(page_paths, lang_code=lang)
 
     all_blocks = [b for blks in page_blocks.values() for b in blks]
+
+    if not all_blocks or not _ocr_quality_ok(ocr_quality):
+        raise RuntimeError(
+            "OCR quality gate failed: "
+            f"confidence={ocr_quality.get('avg_confidence', 0):.2f}, "
+            f"bad_chars={ocr_quality.get('bad_char_ratio', 1):.2f}, "
+            f"gibberish={ocr_quality.get('gibberish_ratio', 1):.2f}, "
+            f"chars_per_page={ocr_quality.get('avg_chars_per_page', 0):.1f}"
+        )
 
     if not all_blocks:
         print("  [!] OCR לא חילץ טקסט — בונה PDF בסיסי ללא שכבת מבנה")
