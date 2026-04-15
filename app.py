@@ -892,12 +892,65 @@ def get_stats():
 
 @app.route('/api/internal/ocr', methods=['POST'])
 def internal_ocr():
-    """נקודת קצה פנימית ל-OCR — מחזירה תוצאות זיהוי טקסט"""
-    return jsonify({
-        'pages': [],
-        'confidence': 0.0,
-        'engine': 'tesseract'
-    })
+    """נקודת קצה פנימית ל-OCR — מרסטר עמודי PDF ומחזיר טקסט + ביטחון"""
+    import tempfile, shutil
+    try:
+        import pytesseract
+        from pytesseract import Output as TessOutput
+        from pdf2image import convert_from_path
+        from PIL import Image
+        tess_cmd = os.environ.get("TESSERACT_CMD", "")
+        if tess_cmd and os.path.isfile(tess_cmd):
+            pytesseract.pytesseract.tesseract_cmd = tess_cmd
+        pytesseract.get_tesseract_version()
+    except Exception as e:
+        return jsonify({'error': f'Tesseract אינו זמין: {e}', 'engine': 'tesseract'}), 503
+
+    if 'file' not in request.files:
+        return jsonify({'error': 'חסר שדה file'}), 400
+
+    uploaded = request.files['file']
+    lang = request.form.get('lang', 'he-IL')
+    lang_map = {'he-IL': 'heb+eng', 'he': 'heb+eng', 'ar': 'ara+heb', 'en-US': 'eng', 'en': 'eng'}
+    tess_lang = lang_map.get(lang, 'heb+eng')
+
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        pdf_path = os.path.join(tmp_dir, 'input.pdf')
+        uploaded.save(pdf_path)
+
+        poppler = os.environ.get("POPPLER_PATH") or None
+        kwargs = {'dpi': 150, 'output_folder': tmp_dir, 'fmt': 'png', 'paths_only': True}
+        if poppler:
+            kwargs['poppler_path'] = poppler
+        page_paths = convert_from_path(pdf_path, **kwargs)
+
+        pages = []
+        total_conf = 0.0
+        counted = 0
+        for path in page_paths:
+            img = Image.open(path)
+            data = pytesseract.image_to_data(img, lang=tess_lang,
+                                             config='--psm 6',
+                                             output_type=TessOutput.DICT)
+            words = [data['text'][j] for j in range(len(data['text']))
+                     if str(data['text'][j]).strip()]
+            confs = [int(data['conf'][j]) for j in range(len(data['conf']))
+                     if str(data['text'][j]).strip() and int(data['conf'][j]) >= 0]
+            text = ' '.join(words)
+            page_conf = (sum(confs) / len(confs) / 100.0) if confs else 0.0
+            pages.append({'text': text, 'confidence': round(page_conf, 4)})
+            if confs:
+                total_conf += page_conf
+                counted += 1
+
+        avg_conf = round(total_conf / counted, 4) if counted else 0.0
+        return jsonify({'pages': pages, 'confidence': avg_conf, 'engine': 'tesseract'})
+    except Exception as e:
+        logger.exception("שגיאה ב-OCR פנימי")
+        return jsonify({'error': str(e), 'engine': 'tesseract'}), 500
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 @app.route('/api/health')
 def health_check():
