@@ -929,13 +929,15 @@ def internal_ocr():
         total_conf = 0.0
         counted = 0
         for img in pil_pages:
-            data = pytesseract.image_to_data(img, lang=tess_lang,
-                                             config='--psm 6',
+            # Tesseract מקבל grayscale — משפר משמעותית זיהוי עברית
+            gray = img.convert('L')
+            data = pytesseract.image_to_data(gray, lang=tess_lang,
+                                             config='--psm 6 --oem 3',
                                              output_type=TessOutput.DICT)
             words = [data['text'][j] for j in range(len(data['text']))
-                     if str(data['text'][j]).strip()]
+                     if data['text'][j] and data['text'][j].strip()]
             confs = [int(data['conf'][j]) for j in range(len(data['conf']))
-                     if str(data['text'][j]).strip() and int(data['conf'][j]) >= 0]
+                     if data['text'][j] and data['text'][j].strip() and int(data['conf'][j]) >= 0]
             text = ' '.join(words)
             page_conf = (sum(confs) / len(confs) / 100.0) if confs else 0.0
             pages.append({'text': text, 'confidence': round(page_conf, 4)})
@@ -944,7 +946,10 @@ def internal_ocr():
                 counted += 1
 
         avg_conf = round(total_conf / counted, 4) if counted else 0.0
-        return jsonify({'pages': pages, 'confidence': avg_conf, 'engine': 'tesseract'})
+        import json as _json
+        body = _json.dumps({'pages': pages, 'confidence': avg_conf, 'engine': 'tesseract'},
+                           ensure_ascii=False)
+        return app.response_class(body, content_type='application/json; charset=utf-8')
     except Exception as e:
         logger.exception("שגיאה ב-OCR פנימי")
         return jsonify({'error': str(e), 'engine': 'tesseract'}), 500
