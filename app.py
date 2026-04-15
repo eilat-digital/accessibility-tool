@@ -556,10 +556,18 @@ def process_pdf(job_id, input_path, output_path, original_name, file_size):
         validation_report = validate_pdf_accessibility(str(output_path))
 
         # סיווג נגישות: full_accessible / basic_accessible_scanned / review_required
+        validation_report['source_type'] = 'scanned' if is_scanned_source else 'digital'
         if not script_non_compliant:
-            # מסמך דיגיטלי שעבר את כל הבדיקות — נגישות מלאה
-            if validation_report['status'] == 'compliant':
-                validation_report['status'] = 'full_accessible'
+            if is_scanned_source:
+                # PDF סרוק שעבר את כל השערים — נגישות בסיסית בלבד, לא מלאה
+                accessibility_class = 'basic_accessible_scanned'
+                validation_report['status'] = accessibility_class
+                validation_report['score'] = min(validation_report['score'], 75)
+                logger.info(f"[job {job_id}] Scanned passed gates → basic_accessible_scanned, score capped at {validation_report['score']}")
+            else:
+                # מסמך דיגיטלי שעבר את כל הבדיקות — נגישות מלאה
+                if validation_report['status'] == 'compliant':
+                    validation_report['status'] = 'full_accessible'
         else:
             # שגיאת semantic gate — סיווג לפי מקור וטיב ה-OCR
             if is_scanned_source:
@@ -840,6 +848,11 @@ def history():
         doc = dict(r)
         if doc.get('accessibility_features'):
             doc['accessibility_features'] = json.loads(doc['accessibility_features'])
+        if doc.get('validation_report'):
+            try:
+                doc['validation_report'] = json.loads(doc['validation_report'])
+            except Exception:
+                pass
         docs.append(doc)
     
     logger.info(f"History requested - returning {len(docs)} documents")

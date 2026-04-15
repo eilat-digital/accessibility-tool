@@ -275,6 +275,8 @@
   .badge-done    { background: var(--grn-s); color: var(--green); }
   .badge-proc    { background: var(--blue-s); color: var(--blue-l); }
   .badge-error   { background: var(--red-s); color: var(--red); }
+  .badge-basic   { background: #FEF3C7; color: #B45309; }
+  .badge-review  { background: #FFEDD5; color: #C2410C; }
 
   .btn-sm {
     padding: 4px 10px;
@@ -720,12 +722,27 @@ function renderHistory(docs) {
     return;
   }
 
+  const ACCESSIBILITY_LABELS = {
+    'full_accessible':          { cls: 'badge-done',   icon: '✓', text: 'הונגש ומוכן לפרסום' },
+    'basic_accessible_scanned': { cls: 'badge-basic',  icon: '⚡', text: 'הנגשה בסיסית (סרוק)' },
+    'review_required':          { cls: 'badge-review', icon: '⚠', text: 'דורש בדיקה ידנית' },
+    'non_compliant':            { cls: 'badge-error',  icon: '✗', text: 'לא אושר כנגיש' },
+    'needs_review':             { cls: 'badge-review', icon: '⚠', text: 'דורש בדיקה ידנית' },
+  };
+
   tbody.innerHTML = docs.map(d => {
-    const badge = d.status === 'done'
-      ? `<span class="badge badge-done">✓ הושלם</span>`
-      : d.status === 'error'
-      ? `<span class="badge badge-error">⚠ שגיאה</span>`
-      : `<span class="badge badge-proc">⟳ מעבד</span>`;
+    let badge;
+    if (d.status === 'error') {
+      badge = `<span class="badge badge-error">⚠ שגיאה</span>`;
+    } else if (d.status !== 'done') {
+      badge = `<span class="badge badge-proc">⟳ מעבד</span>`;
+    } else {
+      const vr = (typeof d.validation_report === 'object' && d.validation_report) ? d.validation_report : {};
+      const aStatus = vr.status || 'full_accessible';
+      const srcType = vr.source_type === 'scanned' ? ' · סרוק' : (vr.source_type === 'digital' ? ' · מקורי' : '');
+      const entry = ACCESSIBILITY_LABELS[aStatus] || { cls: 'badge-done', icon: '✓', text: 'הושלם' };
+      badge = `<span class="badge ${entry.cls}" title="${aStatus}${srcType}">${entry.icon} ${entry.text}${srcType}</span>`;
+    }
 
     const actions = d.status === 'done'
       ? `<button class="btn-sm primary" onclick="window.location='/api/download/${d.id}'">הורדה</button>
