@@ -34,7 +34,10 @@ from .detector    import (
     merge_ai_structure,
 )
 from .tag_builder import inject_digital, inject_scanned, inject_scanned_semantic, build_bookmarks
-from .validator   import StructValidator, FileValidator
+from .validator          import StructValidator, FileValidator
+from .semantic_validator import (
+    SemanticValidator, GateResult, PACGate, PACResult, Finding,
+)
 
 __all__ = [
     # models
@@ -48,6 +51,8 @@ __all__ = [
     "BorderTableDetector", "sort_reading_order", "merge_ai_structure",
     # tag_builder
     "inject_digital", "inject_scanned", "inject_scanned_semantic", "build_bookmarks",
-    # validator
+    # validator (pre-export)
     "StructValidator", "FileValidator",
+    # semantic gate (hard-fail layer)
+    "SemanticValidator", "GateResult", "PACGate", "PACResult", "Finding",
 ]
