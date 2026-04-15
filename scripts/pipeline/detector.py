@@ -90,6 +90,17 @@ _SECTION_COLON_RE = re.compile(r'^[^\n]{1,60}[:\uFF1A]\s*$', re.UNICODE)
 
 # Legal numbered-clause hierarchy: "1." "1.1." "1.1.1."
 _LEGAL_CLAUSE_RE = re.compile(r'^(\d+(?:\.\d+)*)\.\s+\S', re.UNICODE)
+_KEY_VALUE_RE = re.compile(r'^(.{1,45}?)[\s]*[:\uFF1A][\s]*(.{1,140})$', re.UNICODE)
+_SIGNATURE_RE = re.compile(
+    r'(signature|signed|signatory|חתימ|חתום|מאשר|אישור|שם\s+החותם|תפקיד)',
+    re.I | re.UNICODE,
+)
+
+_IMPLIED_LIST_MIN_ITEMS = 3
+_IMPLIED_LIST_MAX_WORDS = 8
+_IMPLIED_LIST_MAX_CHARS = 70
+_IMPLIED_LIST_X_TOLERANCE = 18.0
+_IMPLIED_LIST_GAP_TOLERANCE = 8.0
 
 
 def _legal_clause_level(text: str) -> Optional[int]:
@@ -109,6 +120,32 @@ def _legal_clause_level(text: str) -> Optional[int]:
 def _is_list_item(text: str) -> bool:
     s = text.strip()
     return any(p.match(s) for p in _LIST_PATTERNS) or bool(_DEF_ITEM_RE.match(s))
+
+
+def _is_key_value_text(text: str) -> bool:
+    m = _KEY_VALUE_RE.match(text.strip())
+    if not m:
+        return False
+    label, value = m.group(1).strip(), m.group(2).strip()
+    if not label or not value:
+        return False
+    return len(label.split()) <= 6 and len(value.split()) <= 18
+
+
+def _split_key_value_text(text: str) -> Optional[Tuple[str, str]]:
+    m = _KEY_VALUE_RE.match(text.strip())
+    if not m:
+        return None
+    return m.group(1).strip(), m.group(2).strip()
+
+
+def _is_signature_text(text: str) -> bool:
+    stripped = text.strip()
+    if not stripped:
+        return False
+    if _SIGNATURE_RE.search(stripped):
+        return True
+    return len(stripped) <= 80 and re.search(r'_{4,}|-{4,}', stripped) is not None
 
 
 def _is_hebrew_dominant(text: str) -> bool:
@@ -567,6 +604,12 @@ class StructureDetector:
             raw_tables.extend(align_tables)
             claimed_ids |= align_claimed
 
+        # 1c. Repeated key/value rows promote to semantic tables before P fallback.
+        free_after_tables = [b for b in blocks if id(b) not in claimed_ids]
+        kv_tables, kv_claimed = self._detect_key_value_groups(free_after_tables)
+        raw_tables.extend(kv_tables)
+        claimed_ids |= kv_claimed
+
         # 2. Non-table blocks
         free_blocks = [b for b in blocks if id(b) not in claimed_ids]
 
@@ -596,6 +639,105 @@ class StructureDetector:
         return self._merge(non_table_elems, table_elems)
 
     # ------------------------------------------------------------------
+    def _detect_key_value_groups(self, blocks: List[TextBlock]) -> Tuple[List[dict], Set[int]]:
+        tables: List[dict] = []
+        claimed: Set[int] = set()
+
+        by_page: Dict[int, List[TextBlock]] = defaultdict(list)
+        for b in blocks:
+            by_page[b.page_num].append(b)
+
+        for page_num, page_blocks in by_page.items():
+            ordered = sorted(page_blocks, key=lambda b: (b.y, -b.x))
+            i = 0
+            while i < len(ordered):
+                run: List[Tuple[TextBlock, str, str]] = []
+                base_x: Optional[float] = None
+                j = i
+                while j < len(ordered):
+                    block = ordered[j]
+                    split = _split_key_value_text(block.text)
+                    if not split:
+                        break
+                    if base_x is None:
+                        base_x = block.x
+                    if abs(block.x - base_x) > 24.0:
+                        break
+                    run.append((block, split[0], split[1]))
+                    j += 1
+
+                if len(run) >= 3:
+                    all_blocks = [item[0] for item in run]
+                    tables.append({
+                        "source": "keyvalue",
+                        "rows_raw": run,
+                        "all_blocks": all_blocks,
+                        "page_num": page_num,
+                    })
+                    for b in all_blocks:
+                        claimed.add(id(b))
+                    i = j
+                else:
+                    i += 1
+
+        return tables, claimed
+
+    def _make_list(self, blocks: List[TextBlock], strip_marker: bool = True) -> StructElement:
+        list_elem = StructElement("L", page_num=blocks[0].page_num)
+        for lb in blocks:
+            item_text = _strip_list_marker(lb.text) if strip_marker else lb.text.strip()
+            li = StructElement("LI", page_num=lb.page_num)
+            lbody = StructElement(
+                "LBody", text=item_text,
+                page_num=lb.page_num, source_bbox=lb.bbox,
+                attrs={"original_text": lb.text},
+            )
+            li.add(lbody)
+            list_elem.add(li)
+        return list_elem
+
+    def _implied_list_run(self, blocks: List[TextBlock], start: int,
+                          hd: HeadingDetector) -> List[TextBlock]:
+        first = blocks[start]
+        if not self._is_implied_list_candidate(first, hd):
+            return []
+
+        run = [first]
+        gaps: List[float] = []
+        last = first
+        for block in blocks[start + 1:]:
+            if block.page_num != first.page_num:
+                break
+            if not self._is_implied_list_candidate(block, hd):
+                break
+            if abs(block.x - first.x) > _IMPLIED_LIST_X_TOLERANCE:
+                break
+            gap = block.y - last.y_bottom
+            if gap < -2.0 or gap > max(28.0, last.height * 2.6):
+                break
+            if gaps and abs(gap - statistics.median(gaps)) > _IMPLIED_LIST_GAP_TOLERANCE:
+                break
+            if abs(len(block.text.strip()) - len(first.text.strip())) > 45:
+                break
+            gaps.append(gap)
+            run.append(block)
+            last = block
+
+        return run if len(run) >= _IMPLIED_LIST_MIN_ITEMS else []
+
+    def _is_implied_list_candidate(self, block: TextBlock, hd: HeadingDetector) -> bool:
+        text = block.text.strip()
+        if not text or _is_list_item(text) or _is_key_value_text(text):
+            return False
+        if _SECTION_COLON_RE.match(text) or _legal_clause_level(text) is not None:
+            return False
+        if len(text) > _IMPLIED_LIST_MAX_CHARS or len(text.split()) > _IMPLIED_LIST_MAX_WORDS:
+            return False
+        if hd.classify(block):
+            return False
+        return True
+
+    # ------------------------------------------------------------------
     # Protocol pipeline
     # ------------------------------------------------------------------
     def _classify_protocol(self, blocks: List[TextBlock],
@@ -617,23 +759,23 @@ class StructureDetector:
         def flush_list():
             if not list_buf:
                 return
-            lst = StructElement("L", page_num=list_buf[0].page_num)
-            for lb in list_buf:
-                item_text = _strip_list_marker(lb.text)
-                li    = StructElement("LI", page_num=lb.page_num)
-                lbody = StructElement(
-                    "LBody", text=item_text, page_num=lb.page_num,
-                    source_bbox=lb.bbox,
-                    attrs={"original_text": lb.text},
-                )
-                li.add(lbody)
-                lst.add(li)
-            elements.append(lst)
+            elements.append(self._make_list(list_buf, strip_marker=True))
             list_buf.clear()
 
-        for block in blocks:
+        i = 0
+        while i < len(blocks):
+            block = blocks[i]
             text = block.text.strip()
             if not text:
+                i += 1
+                continue
+
+            implied_run = self._implied_list_run(blocks, i, hd)
+            if implied_run:
+                flush_list()
+                in_agenda = False
+                elements.append(self._make_list(implied_run, strip_marker=False))
+                i += len(implied_run)
                 continue
 
             # Decision block → H3 heading (marks start of a decision)
@@ -643,6 +785,7 @@ class StructureDetector:
                 elements.append(StructElement.heading(
                     3, text, page_num=block.page_num, bbox=block.bbox
                 ))
+                i += 1
                 continue
 
             # Heading detection (includes colon-headers from HeadingDetector)
@@ -658,11 +801,13 @@ class StructureDetector:
                     in_agenda = True
                 else:
                     in_agenda = False
+                i += 1
                 continue
 
             # Numbered list items (always list, even inside agenda)
             if _is_list_item(text) or (in_agenda and _LEGAL_CLAUSE_RE.match(text)):
                 list_buf.append(block)
+                i += 1
                 continue
 
             # Paragraph
@@ -670,6 +815,7 @@ class StructureDetector:
             elements.append(StructElement.paragraph(
                 text, page_num=block.page_num, bbox=block.bbox,
             ))
+            i += 1
 
         flush_list()
         return elements
@@ -765,24 +911,30 @@ class StructureDetector:
         def flush_list():
             if not list_buf:
                 return
-            list_elem = StructElement("L", page_num=list_buf[0].page_num)
-            for lb in list_buf:
-                item_text = _strip_list_marker(lb.text)
-                li = StructElement("LI", page_num=lb.page_num)
-                lbody = StructElement(
-                    "LBody", text=item_text,
-                    page_num=lb.page_num, source_bbox=lb.bbox,
-                    # original_text preserves list marker for MCID content-stream matching
-                    attrs={"original_text": lb.text},
-                )
-                li.add(lbody)
-                list_elem.add(li)
-            elements.append(list_elem)
+            elements.append(self._make_list(list_buf, strip_marker=True))
             list_buf.clear()
 
-        for block in blocks:
+        i = 0
+        while i < len(blocks):
+            block = blocks[i]
             text = block.text.strip()
             if not text:
+                i += 1
+                continue
+
+            implied_run = self._implied_list_run(blocks, i, hd)
+            if implied_run:
+                flush_list()
+                elements.append(self._make_list(implied_run, strip_marker=False))
+                i += len(implied_run)
+                continue
+
+            if _is_signature_text(text):
+                flush_list()
+                elements.append(StructElement.figure(
+                    "Signature", page_num=block.page_num, bbox=block.bbox,
+                ))
+                i += 1
                 continue
 
             # --- heading? ---
@@ -795,11 +947,13 @@ class StructureDetector:
                     page_num=block.page_num,
                     bbox=block.bbox,
                 ))
+                i += 1
                 continue
 
             # --- list item? ---
             if _is_list_item(text):
                 list_buf.append(block)
+                i += 1
                 continue
 
 
@@ -808,6 +962,7 @@ class StructureDetector:
             elements.append(StructElement.paragraph(
                 text, page_num=block.page_num, bbox=block.bbox,
             ))
+            i += 1
 
         flush_list()
         return elements
@@ -916,7 +1071,22 @@ class StructureDetector:
         table  = StructElement("Table", page_num=table_data["page_num"])
         source = table_data.get("source", "align")
 
-        if source == "border" and "rows_raw" in table_data:
+        if source == "keyvalue" and "rows_raw" in table_data:
+            for block, label, value in table_data["rows_raw"]:
+                tr = StructElement("TR", page_num=table_data["page_num"])
+                th = StructElement(
+                    "TH", text=label, page_num=table_data["page_num"],
+                    source_bbox=block.bbox,
+                )
+                th.attrs["Scope"] = "Row"
+                td = StructElement(
+                    "TD", text=value, page_num=table_data["page_num"],
+                    source_bbox=block.bbox,
+                )
+                tr.add(th)
+                tr.add(td)
+                table.add(tr)
+        elif source == "border" and "rows_raw" in table_data:
             # BorderTableDetector: rows_raw = List[List[{text, blocks, bbox}]]
             for i, row_cells in enumerate(table_data["rows_raw"]):
                 tr        = StructElement("TR", page_num=table_data["page_num"])

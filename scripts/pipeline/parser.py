@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import List
+from typing import List, Optional
 
 from .models import TextBlock
 
@@ -61,6 +61,47 @@ def _is_bold_font(font_name: str) -> bool:
     return bool(_BOLD_KEYWORDS.search(font_name))
 
 
+def _line_to_block(line: LTTextLine, page_height: float, page_num: int) -> Optional[TextBlock]:
+    text = line.get_text().strip()
+    if not text:
+        return None
+
+    font_sizes: List[float] = []
+    bold_chars = 0
+    total_chars = 0
+    dominant_font = ""
+
+    for char in line:
+        if not isinstance(char, LTChar):
+            continue
+        font_sizes.append(char.size)
+        total_chars += 1
+        if not dominant_font:
+            dominant_font = char.fontname
+        if _is_bold_font(char.fontname):
+            bold_chars += 1
+
+    if not font_sizes:
+        return None
+
+    x0, y0, x1, y1 = line.bbox
+    return TextBlock(
+        text=text,
+        x=x0,
+        y=page_height - y1,
+        width=x1 - x0,
+        height=y1 - y0,
+        font_size=sum(font_sizes) / len(font_sizes),
+        is_bold=total_chars > 0 and (bold_chars / total_chars) >= 0.45,
+        page_num=page_num,
+        font_name=dominant_font,
+    )
+
+
+def sort_layout_blocks(blocks: List[TextBlock]) -> List[TextBlock]:
+    return sorted(blocks, key=lambda b: (b.page_num, b.y, -b.x))
+
+
 def extract_blocks(pdf_path: str) -> List[TextBlock]:
     """
     Return a list of TextBlock objects extracted from *pdf_path*.
@@ -83,55 +124,17 @@ def extract_blocks(pdf_path: str) -> List[TextBlock]:
                 if not isinstance(element, LTTextBox):
                     continue
 
-                raw_text = element.get_text().strip()
-                if not raw_text:
-                    continue
-
-                # --- character-level font analysis ---
-                font_sizes: List[float] = []
-                bold_chars = 0
-                total_chars = 0
-                dominant_font = ""
-
                 for line in element:
                     if not isinstance(line, LTTextLine):
                         continue
-                    for char in line:
-                        if not isinstance(char, LTChar):
-                            continue
-                        font_sizes.append(char.size)
-                        total_chars += 1
-                        if not dominant_font:
-                            dominant_font = char.fontname
-                        if _is_bold_font(char.fontname):
-                            bold_chars += 1
-
-                if not font_sizes:
-                    continue
-
-                avg_font_size = sum(font_sizes) / len(font_sizes)
-                is_bold = total_chars > 0 and (bold_chars / total_chars) > 0.5
-
-                # PDF coordinate origin is bottom-left; convert to top-down
-                x0, y0, x1, y1 = element.bbox
-                y_from_top = page_height - y1   # distance from top of page
-
-                blocks.append(TextBlock(
-                    text=raw_text,
-                    x=x0,
-                    y=y_from_top,
-                    width=x1 - x0,
-                    height=y1 - y0,
-                    font_size=avg_font_size,
-                    is_bold=is_bold,
-                    page_num=page_num,
-                    font_name=dominant_font,
-                ))
+                    block = _line_to_block(line, page_height, page_num)
+                    if block:
+                        blocks.append(block)
     except Exception:
         # Corrupted PDF or missing pdfminer feature — return whatever we got
         pass
 
-    return blocks
+    return sort_layout_blocks(blocks)
 
 
 def has_text(pdf_path: str, min_chars: int = 50) -> bool:
