@@ -510,6 +510,12 @@ def process_pdf(job_id, input_path, output_path, original_name, file_size):
             logger.error(f"Script error for job {job_id}: stdout={proc.stdout!r} stderr={proc.stderr!r}")
             raise Exception(error_msg)
 
+        # בדיקה: האם הסקריפט דיווח על non_compliant בפלט גם בקוד יציאה 0?
+        _NON_COMPLIANT_SIGNALS = ("SEMANTIC GATE FAIL", "סטטוס: non_compliant", "⚠️ PDF יוצא אך לא נגיש")
+        script_non_compliant = any(sig in proc.stdout for sig in _NON_COMPLIANT_SIGNALS)
+        if script_non_compliant:
+            logger.warning(f"[job {job_id}] Script stdout signals non_compliant — will override shallow validation")
+
         # Calculate processing time
         processing_time = (now_il() - start_time).total_seconds()
         
@@ -525,27 +531,30 @@ def process_pdf(job_id, input_path, output_path, original_name, file_size):
         # Validate the generated PDF
         logger.info(f"Validating PDF for job {job_id}")
         validation_report = validate_pdf_accessibility(str(output_path))
+        if script_non_compliant:
+            validation_report['status'] = 'non_compliant'
 
         # Update DB with comprehensive information
         logger.info(f"Updating database for job {job_id}")
         with get_db() as conn:
+            final_status = 'needs_review' if script_non_compliant else 'done'
             conn.execute(
-                """UPDATE documents SET 
-                   status='done', 
-                   pages=?, 
-                   output_path=?, 
+                """UPDATE documents SET
+                   status=?,
+                   pages=?,
+                   output_path=?,
                    processing_time_seconds=?,
                    accessibility_features=?,
                    accessibility_score=?,
                    validation_report=?,
                    updated_at=?
                    WHERE id=?""",
-                (pages, str(output_path), processing_time, json.dumps(accessibility_features), 
+                (final_status, pages, str(output_path), processing_time, json.dumps(accessibility_features),
                  validation_report['score'], json.dumps(validation_report), now_il().isoformat(), job_id)
             )
             conn.commit()
 
-        jobs[job_id] = {'status': 'done', 'progress': 100, 'score': validation_report['score']}
+        jobs[job_id] = {'status': final_status, 'progress': 100, 'score': validation_report['score']}
         log_operation(job_id, 'complete', 'success', f'Time: {processing_time:.1f}s, Score: {validation_report["score"]}')
         logger.info(f"Successfully completed job {job_id} with accessibility score {validation_report['score']}")
 
