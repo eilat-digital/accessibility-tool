@@ -925,29 +925,35 @@ def internal_ocr():
             kwargs['poppler_path'] = poppler
         pil_pages = convert_from_path(pdf_path, **kwargs)
 
+        # בדוק ש-Hebrew traineddata זמין
+        available_langs = pytesseract.get_languages()
+        if 'heb' not in available_langs:
+            logger.warning(f"OCR: 'heb' traineddata לא נמצא. שפות זמינות: {available_langs}")
+
         pages = []
         total_conf = 0.0
         counted = 0
-        for img in pil_pages:
-            # Tesseract מקבל grayscale — משפר משמעותית זיהוי עברית
+        for page_idx, img in enumerate(pil_pages, 1):
             gray = img.convert('L')
-            data = pytesseract.image_to_data(gray, lang=tess_lang,
+            data = pytesseract.image_to_data(gray, lang='heb+eng',
                                              config='--psm 6 --oem 3',
                                              output_type=TessOutput.DICT)
-            lines = {}
+            line_words = {}
             confs = []
             for j in range(len(data['text'])):
                 word = data['text'][j].strip() if data['text'][j] else ''
                 conf = int(data['conf'][j])
-                line_num = data['line_num'][j]
                 if word and conf > 0:
-                    if line_num not in lines:
-                        lines[line_num] = []
-                    lines[line_num].append(word)
+                    key = (data['block_num'][j], data['par_num'][j], data['line_num'][j])
+                    if key not in line_words:
+                        line_words[key] = []
+                    line_words[key].append(word)
                     confs.append(conf)
-            ordered_lines = [' '.join(lines[ln]) for ln in sorted(lines.keys())]
+            ordered_lines = [' '.join(line_words[k]) for k in sorted(line_words.keys())]
             text = '\n'.join(ordered_lines)
             page_conf = (sum(confs) / len(confs) / 100.0) if confs else 0.0
+            # DEBUG: הדפס 100 תווים ראשונים לכל עמוד
+            print(f"[OCR DEBUG] עמוד {page_idx}: {repr(text[:100])}", flush=True)
             pages.append({'text': text, 'confidence': round(page_conf, 4)})
             if confs:
                 total_conf += page_conf
