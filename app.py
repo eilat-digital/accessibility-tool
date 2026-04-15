@@ -897,12 +897,86 @@ def get_stats():
 
 @app.route('/api/internal/ocr', methods=['POST'])
 def internal_ocr():
-    """נקודת קצה פנימית ל-OCR — מחזירה תוצאות זיהוי טקסט"""
-    return jsonify({
-        'pages': [],
-        'confidence': 0.0,
-        'engine': 'tesseract'
-    })
+    """נקודת קצה פנימית ל-OCR — מרסטר עמודי PDF ומחזיר טקסט + ביטחון"""
+    import tempfile, shutil
+    try:
+        import pytesseract
+        from pytesseract import Output as TessOutput
+        from pdf2image import convert_from_path
+        from PIL import Image
+        tess_cmd = os.environ.get("TESSERACT_CMD", "")
+        if tess_cmd and os.path.isfile(tess_cmd):
+            pytesseract.pytesseract.tesseract_cmd = tess_cmd
+        pytesseract.get_tesseract_version()
+    except Exception as e:
+        return jsonify({'error': f'Tesseract אינו זמין: {e}', 'engine': 'tesseract'}), 503
+
+    if 'file' not in request.files:
+        return jsonify({'error': 'חסר שדה file'}), 400
+
+    uploaded = request.files['file']
+    lang = request.form.get('lang', 'he-IL')
+    lang_map = {'he-IL': 'heb+eng', 'he': 'heb+eng', 'ar': 'ara+heb', 'en-US': 'eng', 'en': 'eng'}
+    tess_lang = lang_map.get(lang, 'heb+eng')
+
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        pdf_path = os.path.join(tmp_dir, 'input.pdf')
+        uploaded.save(pdf_path)
+
+        poppler = os.environ.get("POPPLER_PATH") or None
+        kwargs = {'dpi': 150}
+        if poppler:
+            kwargs['poppler_path'] = poppler
+        pil_pages = convert_from_path(pdf_path, **kwargs)
+
+        print("REAL OCR ENTRY:", __file__, flush=True)
+        # DEBUG: גרסת Tesseract + שפות זמינות
+        tess_ver = pytesseract.get_tesseract_version()
+        available_langs = pytesseract.get_languages()
+        print(f"[OCR ENV] tesseract={tess_ver} langs={available_langs}", flush=True)
+        if 'heb' not in available_langs:
+            logger.warning(f"[OCR ENV] 'heb' traineddata חסר! זמינות: {available_langs}")
+
+        pages = []
+        total_conf = 0.0
+        counted = 0
+        for page_idx, img in enumerate(pil_pages, 1):
+            print(f"[OCR PAGE] עמוד {page_idx}/{len(pil_pages)} גודל={img.size}", flush=True)
+            gray = img.convert('L')
+            data = pytesseract.image_to_data(gray, lang='heb+eng',
+                                             config='--psm 6 --oem 3',
+                                             output_type=TessOutput.DICT)
+            line_words = {}
+            confs = []
+            for j in range(len(data['text'])):
+                word = data['text'][j].strip() if data['text'][j] else ''
+                conf = int(data['conf'][j])
+                if word and conf > 0:
+                    key = (data['block_num'][j], data['par_num'][j], data['line_num'][j])
+                    if key not in line_words:
+                        line_words[key] = []
+                    line_words[key].append(word)
+                    confs.append(conf)
+            ordered_lines = [' '.join(line_words[k]) for k in sorted(line_words.keys())]
+            text = '\n'.join(ordered_lines)
+            page_conf = (sum(confs) / len(confs) / 100.0) if confs else 0.0
+            print(f"[OCR RESULT] עמוד {page_idx}: conf={page_conf:.3f} words={len(confs)} text={repr(text[:120])}", flush=True)
+            pages.append({'text': text, 'confidence': round(page_conf, 4)})
+            if confs:
+                total_conf += page_conf
+                counted += 1
+
+        avg_conf = round(total_conf / counted, 4) if counted else 0.0
+        import json as _json
+        body = _json.dumps({'pages': pages, 'confidence': avg_conf, 'engine': 'tesseract'},
+                           ensure_ascii=False)
+        return app.response_class(body, content_type='application/json; charset=utf-8')
+    except Exception as e:
+        logger.exception("שגיאה ב-OCR פנימי")
+        return jsonify({'error': str(e), 'engine': 'tesseract'}), 500
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 @app.route('/api/health')
 def health_check():

@@ -1,5 +1,8 @@
 FROM python:3.12-slim
 
+# cache-bust: 2026-04-15 — force full layer rebuild
+ARG CACHEBUST=2026-04-15
+
 # System dependencies: Tesseract OCR, Poppler, LibreOffice
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr \

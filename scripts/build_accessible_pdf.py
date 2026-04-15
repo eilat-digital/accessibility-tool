@@ -3,6 +3,11 @@
 build_accessible_pdf.py — v3
 """
 
+# --- דגל זמני: כפה OCR גם על PDF ממחשב (לצורך דיבוג) ---
+FORCE_OCR = True
+
+print("RUNNING REAL OCR SCRIPT PATH:", __file__, flush=True)
+
 import argparse
 import json
 import os
@@ -185,6 +190,7 @@ def _ocr_quality_ok(quality: dict) -> bool:
 
 
 def run_ocr_with_positions(page_paths, lang_code="he-IL"):
+    print("REAL OCR ENTRY:", __file__, flush=True)
     """
     Run Tesseract OCR with per-line bounding boxes.
 
@@ -1814,7 +1820,9 @@ def main():
             page_texts = existing_texts if pdf_type == 'digital' else {}
 
         ai_descriptions = {}
-        if pdf_type == 'digital' and not getattr(args, 'force_ocr', False):
+        if FORCE_OCR:
+            print("[OCR DEBUG] OCR FORCED RUNNING")
+        if pdf_type == 'digital' and not getattr(args, 'force_ocr', False) and not FORCE_OCR:
             # WCAG 1.4.5: preserve original text — do NOT rasterize digital PDFs.
             # Converting to images would turn selectable text into image-of-text,
             # which fails WCAG 2.2 criterion 1.4.5 and breaks screen readers.
