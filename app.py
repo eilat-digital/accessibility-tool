@@ -934,10 +934,14 @@ def internal_ocr():
             data = pytesseract.image_to_data(gray, lang=tess_lang,
                                              config='--psm 6 --oem 3',
                                              output_type=TessOutput.DICT)
-            words = [data['text'][j] for j in range(len(data['text']))
-                     if data['text'][j] and data['text'][j].strip()]
-            confs = [int(data['conf'][j]) for j in range(len(data['conf']))
-                     if data['text'][j] and data['text'][j].strip() and int(data['conf'][j]) >= 0]
+            words = []
+            confs = []
+            for j in range(len(data['text'])):
+                word = data['text'][j].strip() if data['text'][j] else ''
+                conf = int(data['conf'][j])
+                if word and conf > 0:
+                    words.append(word)
+                    confs.append(conf)
             text = ' '.join(words)
             page_conf = (sum(confs) / len(confs) / 100.0) if confs else 0.0
             pages.append({'text': text, 'confidence': round(page_conf, 4)})
