@@ -3,6 +3,9 @@
 build_accessible_pdf.py — v3
 """
 
+# --- דגל זמני: כפה OCR גם על PDF ממחשב (לצורך דיבוג) ---
+FORCE_OCR = True
+
 import argparse
 import json
 import os
@@ -1749,7 +1752,9 @@ def main():
             page_texts = existing_texts if pdf_type == 'digital' else {}
 
         ai_descriptions = {}
-        if pdf_type == 'digital' and not getattr(args, 'force_ocr', False):
+        if FORCE_OCR:
+            print("[OCR DEBUG] OCR FORCED RUNNING")
+        if pdf_type == 'digital' and not getattr(args, 'force_ocr', False) and not FORCE_OCR:
             # WCAG 1.4.5: preserve original text — do NOT rasterize digital PDFs.
             # Converting to images would turn selectable text into image-of-text,
             # which fails WCAG 2.2 criterion 1.4.5 and breaks screen readers.
