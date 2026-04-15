@@ -449,6 +449,28 @@ def validate_pdf_accessibility(pdf_path):
             'status': 'error'
         }
 
+_GARBLED_Q_THRESHOLD = 0.20  # יחס '?' > 20% מעיד על OCR גרוע
+
+def _classify_scanned_result(pdf_path: str) -> str:
+    """מסווג PDF סרוק שנכשל בשערים סמנטיים לפי איכות ה-OCR שלו.
+
+    מחזיר אחד מ:
+    - 'basic_accessible_scanned'  — שכבת טקסט קריאה, נגישות בסיסית
+    - 'review_required'           — OCR גרוע או ריק, דרוש סקירה אנושית
+    """
+    try:
+        from pdfminer.high_level import extract_text
+        text = extract_text(pdf_path, page_numbers=list(range(3))) or ''
+        text = text.strip()
+        if len(text) < 30:
+            return 'review_required'
+        if text.count('?') / len(text) > _GARBLED_Q_THRESHOLD:
+            return 'review_required'
+        return 'basic_accessible_scanned'
+    except Exception:
+        return 'review_required'
+
+
 def process_pdf(job_id, input_path, output_path, original_name, file_size):
     """Process PDF and make it accessible"""
     start_time = now_il()
@@ -513,8 +535,9 @@ def process_pdf(job_id, input_path, output_path, original_name, file_size):
         # בדיקה: האם הסקריפט דיווח על non_compliant בפלט גם בקוד יציאה 0?
         _NON_COMPLIANT_SIGNALS = ("SEMANTIC GATE FAIL", "סטטוס: non_compliant", "⚠️ PDF יוצא אך לא נגיש")
         script_non_compliant = any(sig in proc.stdout for sig in _NON_COMPLIANT_SIGNALS)
+        is_scanned_source = "זוהה: PDF סרוק" in proc.stdout
         if script_non_compliant:
-            logger.warning(f"[job {job_id}] Script stdout signals non_compliant — will override shallow validation")
+            logger.warning(f"[job {job_id}] Script non_compliant detected (scanned={is_scanned_source}) — classifying")
 
         # Calculate processing time
         processing_time = (now_il() - start_time).total_seconds()
@@ -531,16 +554,31 @@ def process_pdf(job_id, input_path, output_path, original_name, file_size):
         # Validate the generated PDF
         logger.info(f"Validating PDF for job {job_id}")
         validation_report = validate_pdf_accessibility(str(output_path))
-        if script_non_compliant:
-            validation_report['status'] = 'non_compliant'
+
+        # סיווג נגישות: full_accessible / basic_accessible_scanned / review_required
+        if not script_non_compliant:
+            # מסמך דיגיטלי שעבר את כל הבדיקות — נגישות מלאה
+            if validation_report['status'] == 'compliant':
+                validation_report['status'] = 'full_accessible'
+        else:
+            # שגיאת semantic gate — סיווג לפי מקור וטיב ה-OCR
+            if is_scanned_source:
+                accessibility_class = _classify_scanned_result(str(output_path))
+            else:
+                accessibility_class = 'review_required'
+            validation_report['status'] = accessibility_class
+            validation_report['score'] = min(
+                validation_report['score'],
+                65 if accessibility_class == 'basic_accessible_scanned' else 45
+            )
+            logger.info(f"[job {job_id}] Accessibility override: status={accessibility_class}, score={validation_report['score']}")
 
         # Update DB with comprehensive information
         logger.info(f"Updating database for job {job_id}")
         with get_db() as conn:
-            final_status = 'needs_review' if script_non_compliant else 'done'
             conn.execute(
                 """UPDATE documents SET
-                   status=?,
+                   status='done',
                    pages=?,
                    output_path=?,
                    processing_time_seconds=?,
@@ -549,14 +587,14 @@ def process_pdf(job_id, input_path, output_path, original_name, file_size):
                    validation_report=?,
                    updated_at=?
                    WHERE id=?""",
-                (final_status, pages, str(output_path), processing_time, json.dumps(accessibility_features),
+                (pages, str(output_path), processing_time, json.dumps(accessibility_features),
                  validation_report['score'], json.dumps(validation_report), now_il().isoformat(), job_id)
             )
             conn.commit()
 
-        jobs[job_id] = {'status': final_status, 'progress': 100, 'score': validation_report['score']}
+        jobs[job_id] = {'status': 'done', 'progress': 100, 'score': validation_report['score']}
         log_operation(job_id, 'complete', 'success', f'Time: {processing_time:.1f}s, Score: {validation_report["score"]}')
-        logger.info(f"Successfully completed job {job_id} with accessibility score {validation_report['score']}")
+        logger.info(f"Completed job {job_id}: accessibility={validation_report['status']}, score={validation_report['score']}")
 
         # Background: extract semantic structure for Review UI
         threading.Thread(
