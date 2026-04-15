@@ -920,16 +920,15 @@ def internal_ocr():
         uploaded.save(pdf_path)
 
         poppler = os.environ.get("POPPLER_PATH") or None
-        kwargs = {'dpi': 150, 'output_folder': tmp_dir, 'fmt': 'png', 'paths_only': True}
+        kwargs = {'dpi': 150}
         if poppler:
             kwargs['poppler_path'] = poppler
-        page_paths = convert_from_path(pdf_path, **kwargs)
+        pil_pages = convert_from_path(pdf_path, **kwargs)
 
         pages = []
         total_conf = 0.0
         counted = 0
-        for path in page_paths:
-            img = Image.open(path)
+        for img in pil_pages:
             data = pytesseract.image_to_data(img, lang=tess_lang,
                                              config='--psm 6',
                                              output_type=TessOutput.DICT)
