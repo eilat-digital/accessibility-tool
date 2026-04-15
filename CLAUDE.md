@@ -50,10 +50,41 @@ curl http://localhost:5000/api/health
 
 ## Architecture
 
-The processing pipeline is split across two files:
+The processing pipeline is split across three layers:
 
 - **[app.py](app.py)** — Flask server: session auth, 13 REST endpoints, SQLite DB, in-process job tracking dict (`jobs`), and background-threaded orchestration. Calls `build_accessible_pdf.py` via `subprocess`. Non-PDF uploads are converted to PDF first (LibreOffice or email parser) before the script is invoked.
 - **[scripts/build_accessible_pdf.py](scripts/build_accessible_pdf.py)** — Standalone CLI script: OCR (pytesseract + pdf2image), AI page description and structure analysis (Claude Haiku, optional), PDF/UA tagging via pikepdf, accessibility stamp overlay. Prints progress to stdout; `app.py` only reads the exit code.
+- **[scripts/pipeline/](scripts/pipeline/)** — Pure-Python library imported by `build_accessible_pdf.py`. Contains all detection, classification, and tagging logic.
+
+### Pipeline subpackage (`scripts/pipeline/`)
+
+| Module | Responsibility |
+|---|---|
+| `models.py` | Data classes: `TextBlock`, `StructElement`, `ValidationResult`; PDF/UA type sets |
+| `classifier.py` | `DocumentClassifier` — heuristic scoring into 7 document types (see below) |
+| `parser.py` | `extract_blocks()` / `extract_lines()` — pdfminer layout extraction with top-down coords |
+| `detector.py` | `StructureDetector`, `HeadingDetector`, `TableDetector`, `BorderTableDetector`; `sort_reading_order()` for Hebrew RTL |
+| `tag_builder.py` | `inject_digital()` / `inject_scanned()` — write StructTreeRoot + MCIDs into pikepdf PDF in-place |
+| `validator.py` | `StructValidator` (pre-export, fast) and `FileValidator` (post-export, pikepdf) |
+
+**Pipeline flow for a born-digital PDF:**
+```
+extract_blocks(pdf) → DocumentClassifier.classify() → StructureDetector.detect()
+  → [merge_ai_structure() if ANTHROPIC_API_KEY] → inject_digital(pdf, elements)
+  → FileValidator.validate() → ValidationResult
+```
+
+**Pipeline flow for a scanned PDF:**
+```
+extract_pages() → run_ocr_with_positions() → StructureDetector.detect()
+  → inject_scanned_semantic(pdf, page_elements) → FileValidator.validate()
+```
+
+**Document types** (`DocumentType` enum in `classifier.py`): `PROTOCOL` (פרוטוקול), `LEGAL` (חוק/תקנות), `WORKPLAN` (תוכנית עבודה/תקציב), `NEWSLETTER` (עלון), `FORM` (טופס), `SCANNED`, `GENERAL`. The type drives both detector heuristics and type-specific validation warnings via `type_specific_warnings()`.
+
+**Two tag-injection paths in `tag_builder.py`:**
+- `inject_digital()` — parses each page's content stream, wraps BT/ET blocks in `BDC<<MCID n>>…EMC`, builds a full ParentTree for PAC compliance.
+- `inject_scanned()` / `inject_scanned_semantic()` — each raster page becomes one `Figure` MCID; semantic elements (H1/P/List/Table) are added as `Sect` siblings *after* the Figure, never nested inside it.
 
 **Job lifecycle:** Upload → UUID assigned → background thread converts if needed → spawns subprocess → status polled via `/api/status/{job_id}` → download via `/api/download/{job_id}`.
 
@@ -106,7 +137,7 @@ Without the key these functions return `{}` and the script continues without AI 
 
 ## Accessibility Scoring (IS 5568 / PDF/UA-1)
 
-Scoring weights in `validate_pdf_accessibility()`:
+Scoring weights (defined in `scripts/pipeline/validator.py` `_WEIGHTS`):
 - 35 pts — text layer (OCR / digital text)
 - 25 pts — `StructTreeRoot` structure tags
 - 20 pts — `/Lang` defined at Root level
@@ -114,7 +145,11 @@ Scoring weights in `validate_pdf_accessibility()`:
 - 5 pts — `pdfuaid:part = 1` in XMP
 - 5 pts — `MarkInfo/Marked = true`
 
+Additional structural sub-checks (errors/warnings only, not scored): heading hierarchy, lists tagged as L/LI/LBody, tables with TH+Scope, reading-order monotonicity.
+
 Status thresholds: ≥85 → `compliant`, 60–84 → `needs_review`, <60 → `non_compliant`.
+
+`StructValidator` runs pre-export against the `StructElement` list; `FileValidator` runs post-export against the written PDF file via pikepdf.
 
 ## Related: WordPress Site
 

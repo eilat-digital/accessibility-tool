@@ -4,6 +4,8 @@ validator.py — IS 5568 / PDF/UA-1 compliance validation.
 Two validators:
 
   StructValidator   — validates a List[StructElement] (pre-export, fast)
+                      Integrates SemanticValidator hard-fail gates:
+                      any hard fail forces score ≤ 45 and status = non_compliant.
   FileValidator     — validates an exported PDF file with pikepdf (post-export)
 
 Both return ValidationResult with score (0-100), status, errors, warnings.
@@ -53,13 +55,46 @@ class StructValidator:
         elements: List[StructElement],
         lang: str = "he-IL",
         title: str = "",
+        # detector candidate counts — required for hard-fail gate
+        heading_candidates: int = 0,
+        list_candidates: int = 0,
+        table_candidates: int = 0,
+        kv_candidates: int = 0,
+        doc_type=None,
+        is_scanned: bool = False,
+        page_texts: Optional[Dict[int, str]] = None,
+        page_confidences: Optional[Dict[int, float]] = None,
     ) -> ValidationResult:
         errors:   List[str] = []
         warnings: List[str] = []
         components: Dict[str, int] = {}
 
         flat = _flatten(elements)
-        types = [e.elem_type for e in flat]
+
+        # ── Run hard-fail semantic gate first ────────────────────────────────
+        try:
+            from .semantic_validator import SemanticValidator
+            gate = SemanticValidator().run(
+                elements=elements,
+                doc_type=doc_type,
+                lang=lang,
+                heading_candidates=heading_candidates,
+                list_candidates=list_candidates,
+                table_candidates=table_candidates,
+                kv_candidates=kv_candidates,
+                is_scanned=is_scanned,
+                page_texts=page_texts,
+                page_confidences=page_confidences,
+            )
+            # Hard fails are errors; review/warnings demoted to warnings
+            errors.extend(f.message for f in gate.hard_fails)
+            warnings.extend(f.message for f in gate.needs_review)
+            warnings.extend(f.message for f in gate.warnings)
+        except Exception as _gate_err:
+            warnings.append(f"SemanticValidator לא זמין: {_gate_err}")
+            gate = None
+
+        # ── Baseline structural scoring ──────────────────────────────────────
 
         # — StructTreeRoot (always true at struct stage) —
         components["has_struct_tree"] = _WEIGHTS["has_struct_tree"]
@@ -90,7 +125,7 @@ class StructValidator:
         components["has_pdfua_xmp"] = _WEIGHTS["has_pdfua_xmp"]
         components["has_markinfo"]  = _WEIGHTS["has_markinfo"]
 
-        # — Structural sub-checks (informational) —
+        # — Structural sub-checks (informational — gate already covers hard cases) —
         headings = [e for e in flat if e.elem_type in
                     ("H1","H2","H3","H4","H5","H6")]
         if not headings:
@@ -98,7 +133,7 @@ class StructValidator:
         elif not _heading_hierarchy_ok(headings):
             warnings.append("היררכיית כותרות שגויה (פסיחת רמה) — PDF/UA §7.5")
 
-        lists  = [e for e in flat if e.elem_type == "L"]
+        lists   = [e for e in flat if e.elem_type == "L"]
         lbodies = [e for e in flat if e.elem_type == "LBody"]
         if lists and not lbodies:
             warnings.append("רשימות קיימות אך חסר LBody — WCAG 1.3.1")
@@ -111,7 +146,13 @@ class StructValidator:
         if not _reading_order_ok(elements):
             warnings.append("סדר קריאה עלול להיות שגוי — WCAG 1.3.2")
 
-        score  = min(100, sum(components.values()))
+        # ── Score computation ────────────────────────────────────────────────
+        score = min(100, sum(components.values()))
+
+        # Hard-fail gate overrides: cap score and force non_compliant
+        if gate is not None and gate.hard_fails:
+            score = min(score, 45)
+
         status = _score_to_status(score)
 
         return ValidationResult(

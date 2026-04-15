@@ -429,56 +429,56 @@ def build_image_pdf_with_mcids(page_paths, page_blocks_dict, output_path, stamp=
     return page_mcid_records
 
 
-def validate_structure_gate(elements, doc_type=None):
+def validate_structure_gate(elements, doc_type=None,
+                             heading_candidates=0, list_candidates=0,
+                             table_candidates=0, lang="he-IL",
+                             is_scanned=False, page_texts=None):
     """
-    PAC pre-export gate: check whether structure reconstruction produced
-    meaningful semantic content.
+    Pre-export semantic gate.  Delegates to SemanticValidator (10 test categories).
 
     Returns (passed: bool, message: str, status_override: str)
-      passed          — True if export may be marked 'accessible'
-      message         — human-readable reason (empty if passed)
-      status_override — 'non_compliant' or 'needs_review' when gate fails; '' if passed
+      passed          — True when no hard-fail tests triggered
+      message         — first hard-fail message, or '' if passed
+      status_override — 'non_compliant' / 'needs_review' / ''
     """
     _sdir = os.path.dirname(os.path.abspath(__file__))
     if _sdir not in sys.path:
         sys.path.insert(0, _sdir)
-    try:
-        from pipeline.classifier import DocumentType
-    except ImportError:
-        DocumentType = None
 
-    total = len(elements)
-    if total == 0:
+    if not elements:
         return (False,
                 "לא זוהו אלמנטים — OCR/reconstruction נכשל לחלוטין",
                 "non_compliant")
 
-    semantic_types = {"H1", "H2", "H3", "Table", "L"}
-    sem_count = sum(1 for e in elements if e.elem_type in semantic_types)
-    ratio     = sem_count / total
-
-    has_heading = any(e.elem_type in ("H1", "H2", "H3") for e in elements)
-    has_list    = any(e.elem_type == "L" for e in elements)
-    has_table   = any(e.elem_type == "Table" for e in elements)
-
-    # Type-specific hard gates
-    if DocumentType:
-        if doc_type in (DocumentType.PROTOCOL, DocumentType.LEGAL):
-            if not has_heading:
-                return (False,
-                        f"{'פרוטוקול' if doc_type == DocumentType.PROTOCOL else 'חוק/תקנות'}: "
-                        "לא זוהו כותרות — reconstruction נכשל. "
-                        "המסמך יוצא כ-non_compliant",
-                        "non_compliant")
-
-    # General soft gate: < 8% semantic elements in a non-trivial document
-    if ratio < 0.08 and total >= 8:
-        return (False,
-                f"reconstruction חסר: {sem_count}/{total} אלמנטים סמנטיים "
-                f"({ratio:.0%}) — מתחת לסף 8%. המסמך יוצא כ-needs_review",
-                "needs_review")
-
-    return True, "", ""
+    try:
+        from pipeline.semantic_validator import SemanticValidator
+        gate = SemanticValidator().run(
+            elements=elements,
+            doc_type=doc_type,
+            lang=lang,
+            heading_candidates=heading_candidates,
+            list_candidates=list_candidates,
+            table_candidates=table_candidates,
+            is_scanned=is_scanned,
+            page_texts=page_texts or {},
+        )
+        if not gate.passed:
+            msg = gate.hard_fails[0].message if gate.hard_fails else ""
+            return False, msg, gate.status_override
+        if gate.needs_review:
+            return True, gate.needs_review[0].message, "needs_review"
+        return True, "", ""
+    except Exception as exc:
+        # Fallback: legacy ratio check so pipeline never crashes
+        semantic_types = {"H1", "H2", "H3", "Table", "L"}
+        total     = len(elements)
+        sem_count = sum(1 for e in elements if e.elem_type in semantic_types)
+        ratio     = sem_count / total if total else 0
+        if ratio < 0.08 and total >= 8:
+            return (False,
+                    f"reconstruction חסר ({ratio:.0%} סמנטי) [fallback: {exc}]",
+                    "needs_review")
+        return True, "", ""
 
 
 def _load_stamp_png(png_path, size=150):
@@ -1072,10 +1072,35 @@ def process_digital_pdf(input_pdf, output_pdf, lang="he-IL",
         elements = merge_ai_structure(elements, page_structures, lang=lang)
         print(f"  לאחר מיזוג AI: {len(elements)} אלמנטים")
 
-    # Pre-export validation
+    # ── Pre-export semantic gate (hard-fail layer) ────────────────────────
+    gate_ok, gate_msg, gate_status = validate_structure_gate(
+        elements, doc_type=doc_type,
+        heading_candidates=head_count,
+        list_candidates=list_count,
+        table_candidates=tbl_count,
+        lang=lang,
+        is_scanned=False,
+    )
+    if not gate_ok:
+        print(f"  ╔══ SEMANTIC GATE FAIL ═══════════════════════════════════════")
+        print(f"  ║  {gate_msg}")
+        print(f"  ║  סטטוס: {gate_status} — המסמך לא יסומן כנגיש")
+        print(f"  ╚══════════════════════════════════════════════════════════════")
+    elif gate_status == "needs_review":
+        print(f"  [GATE] needs_review: {gate_msg}")
+
+    # ── Pre-export validation (scoring) ──────────────────────────────────
     sv = StructValidator()
-    pre_result = sv.validate(elements, lang=lang, title=title)
+    pre_result = sv.validate(
+        elements, lang=lang, title=title,
+        heading_candidates=head_count,
+        list_candidates=list_count,
+        table_candidates=tbl_count,
+        doc_type=doc_type,
+    )
     print(f"  ציון מבנה מקדים: {pre_result.score}/100 ({pre_result.status})")
+    for e in pre_result.errors:
+        print(f"  [ERROR] {e}")
     for w in pre_result.warnings:
         print(f"  [!] {w}")
     # Type-specific validation warnings
@@ -1093,7 +1118,26 @@ def process_digital_pdf(input_pdf, output_pdf, lang="he-IL",
         build_bookmarks(pdf, heading_elems, page_texts={})
         pdf.save(output_pdf)
 
-    print(f"✅ PDF נגיש (pipeline): {output_pdf}")
+    # ── PAC gate (post-export) ────────────────────────────────────────────
+    try:
+        from pipeline.semantic_validator import PACGate
+        pac = PACGate().validate(output_pdf)
+        if not pac.passed:
+            print(f"  ╔══ PAC GATE FAIL ({pac.source}) ═══════════════════════════")
+            for line in pac.summary_lines():
+                print(line)
+            print(f"  ╚══════════════════════════════════════════════════════════════")
+            gate_ok = False
+            gate_status = "non_compliant"
+        elif pac.findings:
+            print(f"  [PAC/{pac.source}] {len(pac.findings)} אזהרות")
+    except Exception as _pac_err:
+        print(f"  [PAC] לא זמין: {_pac_err}")
+
+    if gate_ok:
+        print(f"✅ PDF נגיש (pipeline): {output_pdf}")
+    else:
+        print(f"⚠️  PDF יוצא אך לא נגיש ({gate_status}): {output_pdf}")
 
 
 def _add_metadata_only_impl(input_pdf, output_pdf, lang, title, author):
@@ -1616,19 +1660,60 @@ def process_scanned_pdf(page_paths, output_pdf, lang="he-IL", title="מסמך נ
             elements = merge_ai_structure(elements, page_structures, lang=lang)
             print(f"  לאחר מיזוג AI: {len(elements)} אלמנטים")
 
-    # Type-specific validation warnings
+    # ── OCR quality gate (before structure validation) ────────────────────
+    ocr_page_texts = {pg: t for pg, t in page_texts.items()}
+    try:
+        from pipeline.semantic_validator import test_ocr_quality
+        ocr_findings = test_ocr_quality(ocr_page_texts, is_scanned=True)
+        for f in ocr_findings:
+            label = "[OCR HARD FAIL]" if f.is_hard_fail else f"[OCR {f.severity.upper()}]"
+            print(f"  {label} {f.message}")
+        ocr_hard_fail = any(f.is_hard_fail for f in ocr_findings)
+    except Exception as _ocr_e:
+        ocr_findings  = []
+        ocr_hard_fail = False
+        print(f"  [OCR quality check] לא זמין: {_ocr_e}")
+
+    # ── Pre-export validation (scoring) ──────────────────────────────────
     sv         = StructValidator()
-    pre_result = sv.validate(elements, lang=lang, title=title)
+    pre_result = sv.validate(
+        elements, lang=lang, title=title,
+        heading_candidates=head_count,
+        list_candidates=list_count,
+        table_candidates=tbl_count,
+        doc_type=doc_type,
+        is_scanned=True,
+        page_texts=ocr_page_texts,
+    )
     print(f"  ציון מבנה: {pre_result.score}/100 ({pre_result.status})")
+    for e in pre_result.errors:
+        print(f"  [ERROR] {e}")
     for w in pre_result.warnings:
         print(f"  [!] {w}")
     for w in type_specific_warnings(elements, doc_type):
         print(f"  [!] {w}")
 
-    # ── 5. PAC gate ───────────────────────────────────────────────────────
-    gate_ok, gate_msg, gate_status = validate_structure_gate(elements, doc_type)
+    # ── 5. Semantic gate (replaces legacy validate_structure_gate) ────────
+    gate_ok, gate_msg, gate_status = validate_structure_gate(
+        elements, doc_type=doc_type,
+        heading_candidates=head_count,
+        list_candidates=list_count,
+        table_candidates=tbl_count,
+        lang=lang,
+        is_scanned=True,
+        page_texts=ocr_page_texts,
+    )
+    if ocr_hard_fail:
+        gate_ok     = False
+        gate_status = "non_compliant"
+        gate_msg    = gate_msg or "OCR quality hard fail"
     if not gate_ok:
-        print(f"  [PAC GATE FAIL] {gate_msg}")
+        print(f"  ╔══ SEMANTIC GATE FAIL ═══════════════════════════════════════")
+        print(f"  ║  {gate_msg}")
+        print(f"  ║  סטטוס: {gate_status} — המסמך לא יסומן כנגיש")
+        print(f"  ╚══════════════════════════════════════════════════════════════")
+    elif gate_status == "needs_review":
+        print(f"  [GATE] needs_review: {gate_msg}")
 
     # ── 6. Build image PDF with per-block MCIDs ───────────────────────────
     base_tmp = output_pdf + ".base.pdf"
@@ -1653,8 +1738,26 @@ def process_scanned_pdf(page_paths, output_pdf, lang="he-IL", title="מסמך נ
     except Exception:
         pass
 
-    status_label = "נגיש" if gate_ok else gate_status
-    print(f"  PDF ({status_label}): {output_pdf}")
+    # ── PAC gate (post-export) ────────────────────────────────────────────
+    try:
+        from pipeline.semantic_validator import PACGate
+        pac = PACGate().validate(output_pdf)
+        if not pac.passed:
+            print(f"  ╔══ PAC GATE FAIL ({pac.source}) ═══════════════════════════")
+            for line in pac.summary_lines():
+                print(line)
+            print(f"  ╚══════════════════════════════════════════════════════════════")
+            gate_ok     = False
+            gate_status = "non_compliant"
+        elif pac.findings:
+            print(f"  [PAC/{pac.source}] {len(pac.findings)} אזהרות")
+    except Exception as _pac_err:
+        print(f"  [PAC] לא זמין: {_pac_err}")
+
+    if gate_ok:
+        print(f"✅ PDF נגיש (סרוק): {output_pdf}")
+    else:
+        print(f"⚠️  PDF יוצא אך לא נגיש ({gate_status}): {output_pdf}")
 
 
 def main():
