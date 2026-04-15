@@ -925,6 +925,7 @@ def internal_ocr():
             kwargs['poppler_path'] = poppler
         pil_pages = convert_from_path(pdf_path, **kwargs)
 
+        print("REAL OCR ENTRY:", __file__, flush=True)
         # DEBUG: גרסת Tesseract + שפות זמינות
         tess_ver = pytesseract.get_tesseract_version()
         available_langs = pytesseract.get_languages()

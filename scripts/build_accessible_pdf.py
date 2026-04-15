@@ -138,6 +138,7 @@ def _pdf_escape_text(text: str) -> bytes:
 
 
 def run_ocr_with_positions(page_paths, lang_code="he-IL"):
+    print("REAL OCR ENTRY:", __file__, flush=True)
     """
     Run Tesseract OCR with per-line bounding boxes.
 
