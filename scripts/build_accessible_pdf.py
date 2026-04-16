@@ -23,6 +23,70 @@ def ensure_deps():
         sys.exit(1)
 
 
+def ocr_text_to_blocks(page_texts):
+    """
+    Convert OCR text (page_num → text string) into TextBlock objects.
+
+    Since OCR output has no positioning info, we create synthetic blocks:
+    - Each line of text → one TextBlock
+    - x=0 for all (no horizontal variation)
+    - y = line_index * 12 (synthetic line spacing)
+    - font_size=12, is_bold=False (defaults)
+
+    This allows text-pattern heuristics (lists, headings, etc.) to work,
+    though position-based heuristics (percentile, gap analysis) will be disabled.
+    """
+    from scripts.pipeline.models import TextBlock
+
+    blocks = []
+    for page_num in sorted(page_texts.keys()):
+        text = page_texts[page_num]
+        lines = text.split('\n')
+
+        for line_idx, line in enumerate(lines):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            blocks.append(TextBlock(
+                text=stripped,
+                x=0.0,
+                y=float(line_idx * 12),
+                width=600.0,
+                height=12.0,
+                font_size=12.0,
+                is_bold=False,
+                page_num=page_num,
+                font_name="",
+            ))
+
+    return blocks
+
+
+def detect_structure_from_ocr(page_texts):
+    """
+    Run the rule-based detector on OCR text blocks.
+    Returns a list of StructElement objects representing the detected structure.
+    """
+    from scripts.pipeline import StructureDetector, DocumentClassifier, DocumentType
+
+    if not page_texts:
+        return []
+
+    blocks = ocr_text_to_blocks(page_texts)
+    if not blocks:
+        return []
+
+    # Classify the document type (used to select detection pipeline)
+    doc_type = DocumentClassifier().classify(blocks)
+    print(f"  סוג מסמך: {doc_type.value}")
+
+    # Run the detector
+    detector = StructureDetector()
+    elements = detector.detect(blocks, graphic_lines=None, doc_type=doc_type)
+
+    return elements
+
+
 FONT_CANDIDATES = [
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
@@ -443,9 +507,47 @@ def add_metadata_only(input_pdf, output_pdf, lang="he-IL", title="מסמך נג�
     print(f"✅ PDF נגיש (metadata): {output_pdf}")
 
 
+def _build_pdf_structure_from_elements(pdf, pages, doc_elem, str_root, structure_elements, make_elem, parent_tree_map):
+    """
+    Convert detected StructElement objects into pikepdf structure.
+
+    For simplicity, each top-level detected element → direct child of Document.
+    (Grouping by page is implicit in page_num.)
+    """
+    from pikepdf import Array, Name
+
+    def elem_to_pikepdf(elem, parent):
+        """Recursively convert StructElement to pikepdf Dictionary."""
+        e = make_elem(
+            elem.elem_type,
+            parent,
+            title_text=elem.text[:100] if elem.text else "",
+            actual_text=elem.text[:200] if elem.text else "",
+            alt_text=elem.text[:200] if elem.text else "",
+        )
+        for attr_name, attr_val in elem.attrs.items():
+            if attr_name == "Scope":
+                e[f"/{attr_name}"] = Name(f"/{attr_val}")
+            else:
+                from pikepdf import String
+                e[f"/{attr_name}"] = String(str(attr_val))
+        if elem.children:
+            child_elems = [elem_to_pikepdf(child, e) for child in elem.children]
+            e["/K"] = Array(child_elems)
+        return e
+
+    # Convert all detected elements to pikepdf
+    children = []
+    for elem in structure_elements:
+        pdf_elem = elem_to_pikepdf(elem, doc_elem)
+        children.append(pdf_elem)
+
+    doc_elem["/K"] = Array(children) if children else Array([])
+
+
 def add_pdfua_tags(input_pdf, output_pdf, lang="he-IL", title="\u05de\u05e1\u05de\u05da \u05e0\u05d2\u05d9\u05e9",
                    page_texts=None, page_titles=None, tables_info=None, pdf_type="scanned",
-                   ai_descriptions=None):
+                   ai_descriptions=None, structure_elements=None):
     import pikepdf
     from pikepdf import Dictionary, Array, Name, String, Stream
 
@@ -453,6 +555,7 @@ def add_pdfua_tags(input_pdf, output_pdf, lang="he-IL", title="\u05de\u05e1\u05d
     if page_titles is None: page_titles = {}
     if tables_info is None: tables_info = {}
     if ai_descriptions is None: ai_descriptions = {}
+    if structure_elements is None: structure_elements = []
 
     print("\u05de\u05d5\u05e1\u05d9\u05e3 \u05ea\u05d9\u05d5\u05d2 PDF/UA...")
     pdf = pikepdf.open(input_pdf)
@@ -511,6 +614,18 @@ def add_pdfua_tags(input_pdf, output_pdf, lang="he-IL", title="\u05de\u05e1\u05d
     str_root = pdf.make_indirect(Dictionary(Type=Name("/StructTreeRoot"), Lang=String(lang)))
     doc_elem = make_elem("Document", str_root, title_text=title)
     str_root["/K"] = Array([doc_elem])
+
+    # If detected structure is provided, use it. Otherwise fall back to per-page flat structure.
+    if structure_elements:
+        print("  יוצר: מבנה ממצא (StructureDetector)")
+        _build_pdf_structure_from_elements(
+            pdf, pages, doc_elem, str_root, structure_elements, make_elem, parent_tree_map
+        )
+        pdf.Root["/StructTreeRoot"] = str_root
+        pdf.save(output_pdf)
+        print(f"\u2705 PDF \u05e0\u05d2\u05d9\u05e9: {output_pdf}")
+        return
+
     sect_elems = []
     page_patch_info = []
 
@@ -672,13 +787,16 @@ def main():
             # Only add PDF/UA metadata (XMP, Lang, ViewerPreferences) — leave structure intact.
             add_metadata_only(base_pdf, args.output, lang=args.lang, title=args.title)
         else:
+            # Scanned PDF: detect semantic structure from OCR text
+            structure_elements = detect_structure_from_ocr(page_texts) if page_texts else []
             add_pdfua_tags(base_pdf, args.output,
                            lang=args.lang, title=args.title,
                            page_texts=page_texts,
                            page_titles=page_titles,
                            tables_info=tables_info,
                            pdf_type=pdf_type,
-                           ai_descriptions=ai_descriptions)
+                           ai_descriptions=ai_descriptions,
+                           structure_elements=structure_elements)
 
         if args.stamp:
             apply_stamp_to_pdf(args.output)
