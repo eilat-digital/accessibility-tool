@@ -507,42 +507,31 @@ def add_metadata_only(input_pdf, output_pdf, lang="he-IL", title="מסמך נג�
     print(f"✅ PDF נגיש (metadata): {output_pdf}")
 
 
-def _build_pdf_structure_from_elements(pdf, pages, doc_elem, str_root, structure_elements, make_elem, parent_tree_map):
+def _det_elem_to_pikepdf(det_elem, parent, make_elem, pikepdf):
     """
-    Convert detected StructElement objects into pikepdf structure.
+    Recursively convert a detector StructElement to a pikepdf struct element.
 
-    For simplicity, each top-level detected element → direct child of Document.
-    (Grouping by page is implicit in page_num.)
+    Does NOT set /K (MCID) or /Pg — those are set by the caller on the first
+    top-level element per page to preserve content-stream linkage.
     """
-    from pikepdf import Array, Name
+    from pikepdf import Array, Name, String
 
-    def elem_to_pikepdf(elem, parent):
-        """Recursively convert StructElement to pikepdf Dictionary."""
-        e = make_elem(
-            elem.elem_type,
-            parent,
-            title_text=elem.text[:100] if elem.text else "",
-            actual_text=elem.text[:200] if elem.text else "",
-            alt_text=elem.text[:200] if elem.text else "",
-        )
-        for attr_name, attr_val in elem.attrs.items():
-            if attr_name == "Scope":
-                e[f"/{attr_name}"] = Name(f"/{attr_val}")
-            else:
-                from pikepdf import String
-                e[f"/{attr_name}"] = String(str(attr_val))
-        if elem.children:
-            child_elems = [elem_to_pikepdf(child, e) for child in elem.children]
-            e["/K"] = Array(child_elems)
-        return e
-
-    # Convert all detected elements to pikepdf
-    children = []
-    for elem in structure_elements:
-        pdf_elem = elem_to_pikepdf(elem, doc_elem)
-        children.append(pdf_elem)
-
-    doc_elem["/K"] = Array(children) if children else Array([])
+    elem_text = det_elem.text or ""
+    e = make_elem(
+        det_elem.elem_type, parent,
+        title_text=elem_text[:100],
+        actual_text=elem_text[:200],
+        alt_text=elem_text[:200],
+    )
+    for attr_name, attr_val in det_elem.attrs.items():
+        if attr_name == "Scope":
+            e[f"/{attr_name}"] = Name(f"/{attr_val}")
+        else:
+            e[f"/{attr_name}"] = String(str(attr_val))
+    if det_elem.children:
+        child_elems = [_det_elem_to_pikepdf(c, e, make_elem, pikepdf) for c in det_elem.children]
+        e["/K"] = Array(child_elems)
+    return e
 
 
 def add_pdfua_tags(input_pdf, output_pdf, lang="he-IL", title="\u05de\u05e1\u05de\u05da \u05e0\u05d2\u05d9\u05e9",
@@ -615,16 +604,16 @@ def add_pdfua_tags(input_pdf, output_pdf, lang="he-IL", title="\u05de\u05e1\u05d
     doc_elem = make_elem("Document", str_root, title_text=title)
     str_root["/K"] = Array([doc_elem])
 
-    # If detected structure is provided, use it. Otherwise fall back to per-page flat structure.
+    # Pre-group detector elements by page so the per-page loop can use them.
+    # The loop itself is never bypassed — it owns all wiring (StructParents,
+    # ParentTree, content stream patching).
+    from collections import defaultdict
+    elems_by_page = defaultdict(list)
+    for det_elem in structure_elements:
+        elems_by_page[det_elem.page_num].append(det_elem)
+
     if structure_elements:
-        print("  יוצר: מבנה ממצא (StructureDetector)")
-        _build_pdf_structure_from_elements(
-            pdf, pages, doc_elem, str_root, structure_elements, make_elem, parent_tree_map
-        )
-        pdf.Root["/StructTreeRoot"] = str_root
-        pdf.save(output_pdf)
-        print(f"\u2705 PDF \u05e0\u05d2\u05d9\u05e9: {output_pdf}")
-        return
+        print("  מבנה ממצא: משולב בתיוג (StructureDetector)")
 
     sect_elems = []
     page_patch_info = []
@@ -633,7 +622,7 @@ def add_pdfua_tags(input_pdf, output_pdf, lang="he-IL", title="\u05de\u05e1\u05d
         pg_idx_0 = pg_idx - 1
         page_obj = page.obj
         page_obj["/Tabs"] = Name("/S")
-        page_obj["/StructParents"] = pikepdf.objects.Integer(pg_idx_0)
+        page_obj["/StructParents"] = pikepdf.objects.Integer(pg_idx_0)  # always set
 
         media = page_obj.get("/MediaBox")
         pw = float(media[2]) if media else 595.0
@@ -651,18 +640,36 @@ def add_pdfua_tags(input_pdf, output_pdf, lang="he-IL", title="\u05de\u05e1\u05d
         children = []
 
         body_text = page_text.strip() if page_text else f"תוכן עמוד {pg_idx}"
-        if pdf_type == 'digital':
+        page_det_elems = elems_by_page.get(pg_idx, [])
+
+        if page_det_elems and pdf_type != 'digital':
+            # Detector path: convert elements and wire the FIRST one to MCID so
+            # the content stream BDC marker points to a real structure element.
+            # Subsequent elements on the same page have no MCID ref (the same
+            # limitation as the legacy flat-P — one BDC wrapper per page).
+            first = True
+            for det_elem in page_det_elems:
+                child = _det_elem_to_pikepdf(det_elem, sect, make_elem, pikepdf)
+                if first:
+                    child["/K"] = pikepdf.objects.Integer(P_MCID)
+                    child["/Pg"] = page_obj
+                    parent_tree_map[pg_idx_0] = [child]
+                    first = False
+                children.append(child)
+        elif pdf_type == 'digital':
             # For digital PDFs: do NOT add MCID — the original content stream
             # may already contain BDC markers with MCID 0, causing "MCID already
             # present" errors in PAC. Use ActualText/Alt only (no content ref).
             p = make_elem("P", sect, actual_text=body_text, alt_text=body_text)
+            children.append(p)
         else:
+            # Legacy flat-P fallback (no detector output for this page)
             p = make_elem("P", sect,
                           actual_text=body_text,
                           alt_text=body_text,
                           page_obj=page_obj, mcid=P_MCID)
             parent_tree_map[pg_idx_0] = [p]
-        children.append(p)
+            children.append(p)
 
         for tbl_def in tables_info.get(str(pg_idx), tables_info.get(pg_idx, [])):
             summary = tbl_def.get("summary") or f"\u05d8\u05d1\u05dc\u05d4 \u05d1\u05e2\u05de\u05d5\u05d3 {pg_idx}"
