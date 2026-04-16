@@ -519,12 +519,8 @@ def process_pdf(job_id, input_path, output_path, original_name, file_size):
         timeout_seconds = max(300, min(3600, 300 + pages * 4))
         logger.info(f"Processing timeout set to {timeout_seconds}s for {pages} pages")
         
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_seconds)
-        logger.info(f"[OCR DEBUG] SCRIPT_PATH={SCRIPT_PATH}")
-        logger.info(f"[OCR DEBUG] CMD={' '.join(map(str, cmd))}")
-        logger.info(f"[OCR DEBUG] returncode={proc.returncode}")
-        logger.info(f"[OCR DEBUG] stdout={proc.stdout[:4000]}")
-        logger.info(f"[OCR DEBUG] stderr={proc.stderr[:4000]}")
+        proc = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=timeout_seconds)
+        logger.info(f"Script returncode={proc.returncode} for job {job_id}")
         jobs[job_id]['progress'] = 90
 
         if proc.returncode != 0:
