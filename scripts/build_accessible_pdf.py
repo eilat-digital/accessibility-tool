@@ -3,11 +3,6 @@
 build_accessible_pdf.py — v3
 """
 
-# --- דגל זמני: כפה OCR גם על PDF ממחשב (לצורך דיבוג) ---
-FORCE_OCR = True
-
-print("RUNNING REAL OCR SCRIPT PATH:", __file__, flush=True)
-
 import argparse
 import json
 import os
@@ -1820,9 +1815,7 @@ def main():
             page_texts = existing_texts if pdf_type == 'digital' else {}
 
         ai_descriptions = {}
-        if FORCE_OCR:
-            print("[OCR DEBUG] OCR FORCED RUNNING")
-        if pdf_type == 'digital' and not getattr(args, 'force_ocr', False) and not FORCE_OCR:
+        if pdf_type == 'digital' and not getattr(args, 'force_ocr', False):
             # WCAG 1.4.5: preserve original text — do NOT rasterize digital PDFs.
             # Converting to images would turn selectable text into image-of-text,
             # which fails WCAG 2.2 criterion 1.4.5 and breaks screen readers.
@@ -1856,13 +1849,6 @@ def main():
                     if ai_paths:
                         page_structures = analyze_structure_with_ai(
                             ai_paths, page_texts, lang_code=args.lang)
-
-            # FORCE_OCR=True skips the shutil.copy2 above, leaving base_pdf absent.
-            # Guard: ensure base_pdf exists before handing it to process_digital_pdf.
-            if not os.path.isfile(base_pdf):
-                import shutil as _sh_guard
-                _sh_guard.copy2(args.input, base_pdf)
-                print("  PDF ממחשב: שמירת בסיס (fallback — FORCE_OCR עקף העתקה)")
 
             process_digital_pdf(
                 base_pdf, args.output,
