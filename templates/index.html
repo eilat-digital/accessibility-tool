@@ -61,6 +61,12 @@
   }
   header h1 { color: white; font-size: 15px; font-weight: 500; }
   header span { color: rgba(255,255,255,.5); font-size: 13px; margin-right: auto; }
+  .logout-btn {
+    color: rgba(255,255,255,.7); font-size: 12px; text-decoration: none;
+    border: 1px solid rgba(255,255,255,.3); border-radius: 6px;
+    padding: 4px 12px; transition: all .2s;
+  }
+  .logout-btn:hover { background: rgba(255,255,255,.15); color: #fff; }
 
   /* Layout */
   main {
@@ -269,6 +275,8 @@
   .badge-done    { background: var(--grn-s); color: var(--green); }
   .badge-proc    { background: var(--blue-s); color: var(--blue-l); }
   .badge-error   { background: var(--red-s); color: var(--red); }
+  .badge-basic   { background: #FEF3C7; color: #B45309; }
+  .badge-review  { background: #FFEDD5; color: #C2410C; }
 
   .btn-sm {
     padding: 4px 10px;
@@ -334,6 +342,31 @@
   .stat-card { animation: fadeIn 0.6s ease-out; }
   .card { animation: fadeIn 0.4s ease-out; }
 
+  /* Queue */
+  .queue-section { margin: 0 1.25rem 1.25rem; }
+  .queue-header {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 8px;
+  }
+  .queue-title { font-size: 13px; font-weight: 600; color: var(--gray-1); }
+  .queue-counter { font-size: 12px; color: var(--gray-3); }
+  .queue-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 9px 12px;
+    border: 1px solid var(--gray-4);
+    border-radius: 8px; margin-bottom: 5px;
+    background: var(--white); transition: all .2s;
+  }
+  .queue-item.qi-processing { border-color: var(--blue-l); background: var(--blue-s); }
+  .queue-item.qi-done       { border-color: #86EFAC;       background: var(--grn-s); }
+  .queue-item.qi-error      { border-color: #FCA5A5;       background: var(--red-s); }
+  .qi-icon { font-size: 15px; flex-shrink: 0; }
+  .qi-info { flex: 1; min-width: 0; }
+  .qi-name { font-size: 12px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .qi-status { font-size: 11px; color: var(--gray-3); margin-top: 2px; }
+  .qi-bar-wrap { height: 4px; background: var(--gray-4); border-radius: 99px; margin-top: 5px; }
+  .qi-bar { height: 100%; background: linear-gradient(90deg,var(--blue),var(--blue-l)); border-radius: 99px; width: 0%; transition: width .4s; }
+
   .btn, .btn-download, .btn-sm { transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1); }
   .btn:hover, .btn-download:hover, .btn-sm:hover { transform: translateY(-2px); box-shadow: var(--shadow-lg); }
   .btn:active, .btn-download:active, .btn-sm:active { transform: translateY(0); }
@@ -366,7 +399,8 @@
 <header>
   <div class="logo-mark">נג</div>
   <h1>מערכת הנגשת מסמכים</h1>
-  <span>עיריית אילת — מחלקה דיגיטלית</span>
+  <span>עיריית אילת — שימוש פנימי</span>
+  <a href="/logout" class="logout-btn">יציאה</a>
 </header>
 
 <main>
@@ -407,25 +441,26 @@
 
     <div class="drop-zone" id="drop-zone">
       <div class="drop-icon">📂</div>
-      <p><strong onclick="document.getElementById('file-input').click()">לחצי לבחירת קובץ</strong> או גרור לכאן</p>
-      <small>PDF בלבד · עד 200MB</small>
-      <div id="file-size-warning" style="display:none; color: #E05C20; font-size: 12px; margin-top: 8px;">
-        ⚠️ קובץ גדול - עיבוד עשוי להימשך עד 30 דקות
+      <p><strong onclick="document.getElementById('file-input').click()">לחצו לבחירת קבצים</strong> או גררו לכאן</p>
+      <div style="display:flex; gap:6px; flex-wrap:wrap; justify-content:center; margin: 8px 0;">
+        <span style="background:#E8F0FB; color:#1A4E8A; font-size:11px; padding:3px 8px; border-radius:4px; font-weight:600;">PDF</span>
+        <span style="background:#E8F0FB; color:#1A4E8A; font-size:11px; padding:3px 8px; border-radius:4px; font-weight:600;">Word (.docx)</span>
+        <span style="background:#E8F0FB; color:#1A4E8A; font-size:11px; padding:3px 8px; border-radius:4px; font-weight:600;">PowerPoint (.pptx)</span>
+        <span style="background:#E8F0FB; color:#1A4E8A; font-size:11px; padding:3px 8px; border-radius:4px; font-weight:600;">Excel (.xlsx)</span>
+        <span style="background:#FFF0E8; color:#B45309; font-size:11px; padding:3px 8px; border-radius:4px; font-weight:600;">דוא"ל (.eml/.msg)</span>
       </div>
-      <input type="file" id="file-input" accept=".pdf">
+      <small style="color:var(--gray-3)">עד 300 עמודים · עד 200MB</small>
+      <div id="file-warning" style="display:none; margin-top:10px; padding:8px 12px; border-radius:6px; font-size:12px; text-align:right;"></div>
+      <input type="file" id="file-input" accept=".pdf,.docx,.doc,.pptx,.ppt,.xlsx,.xls,.eml,.msg" multiple>
     </div>
 
-    <div class="processing-box" id="processing-box">
-      <div class="file-row">
-        <span class="file-icon">📄</span>
-        <span class="file-name" id="proc-filename">—</span>
-        <span class="file-status" id="proc-status">מעבד...</span>
+    <!-- Queue -->
+    <div class="queue-section" id="queue-section" style="display:none;">
+      <div class="queue-header">
+        <span class="queue-title">תור עיבוד</span>
+        <span class="queue-counter" id="queue-counter"></span>
       </div>
-      <div class="progress-wrap">
-        <div class="progress-bar" id="progress-bar"></div>
-      </div>
-      <div class="progress-label" id="progress-label">מתחיל עיבוד...</div>
-      <div class="progress-time" id="progress-time"></div>
+      <div id="queue-list"></div>
     </div>
 
     <div id="features-list" class="features-list">
@@ -492,171 +527,173 @@
 </main>
 
 <script>
-let currentJobId = null;
-let pollInterval = null;
 let allHistory = [];
-let currentStartTime = null;
 
-const dropZone = document.getElementById('drop-zone');
+// ── Queue state ───────────────────────────────────────────
+let queue = [];
+let queueSeq = 0;
+let isProcessing = false;
+
+const ALLOWED = ['.pdf','.docx','.doc','.pptx','.ppt','.xlsx','.xls','.eml','.msg'];
+const PROC_LABELS = {
+  5:'מתחיל עיבוד...',10:'טוען קובץ...',30:'בודק עמודים...',
+  50:'מנגיש תוכן...',90:'מוסיף תיוג PDF/UA...',100:'הושלם!'
+};
+
+const dropZone  = document.getElementById('drop-zone');
 const fileInput = document.getElementById('file-input');
 
 dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
 dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
 dropZone.addEventListener('drop', e => {
-  e.preventDefault();
-  dropZone.classList.remove('drag-over');
-  const file = e.dataTransfer.files[0];
-  if (file) uploadFile(file);
+  e.preventDefault(); dropZone.classList.remove('drag-over');
+  addFilesToQueue(e.dataTransfer.files);
 });
 fileInput.addEventListener('change', () => {
-  if (fileInput.files[0]) {
-    const fileSizeMB = fileInput.files[0].size / (1024 * 1024);
-    const warning = document.getElementById('file-size-warning');
-    if (fileSizeMB > 50) {
-      warning.style.display = 'block';
-      warning.innerHTML = `⚠️ קובץ גדול (${fileSizeMB.toFixed(1)}MB) - עיבוד עשוי להימשך כמה דקות`;
-    } else {
-      warning.style.display = 'none';
-    }
-    uploadFile(fileInput.files[0]);
-  }
+  addFilesToQueue(fileInput.files);
+  fileInput.value = '';
 });
 dropZone.addEventListener('click', e => { if (e.target.tagName !== 'STRONG') fileInput.click(); });
 
-// --- Upload ---
-async function uploadFile(file) {
-  if (!file.name.toLowerCase().endsWith('.pdf')) {
-    alert('יש להעלות קובץ PDF בלבד'); return;
+// ── Queue management ──────────────────────────────────────
+function addFilesToQueue(files) {
+  let added = 0;
+  for (const file of files) {
+    const ext = file.name.slice(file.name.lastIndexOf('.')).toLowerCase();
+    if (!ALLOWED.includes(ext)) {
+      showFileWarning(`"${file.name}" — סוג קובץ לא נתמך`, 'error');
+      continue;
+    }
+    queue.push({ id: ++queueSeq, file, status: 'waiting', jobId: null, progress: 0, statusText: 'ממתין...' });
+    added++;
   }
+  if (added) { renderQueue(); processNextInQueue(); }
+}
 
-  dropZone.style.display = 'none';
-  const procBox = document.getElementById('processing-box');
-  procBox.style.display = 'block';
-  document.getElementById('proc-filename').textContent = file.name;
-  document.getElementById('proc-status').textContent = 'מעלה...';
-  document.getElementById('result-box').style.display = 'none';
-  document.getElementById('features-list').style.display = 'none';
-  setProgress(5, 'מעלה קובץ...', '');
+function renderQueue() {
+  const section = document.getElementById('queue-section');
+  if (!queue.length) { section.style.display = 'none'; return; }
+  section.style.display = 'block';
+  const done = queue.filter(i => i.status === 'done').length;
+  document.getElementById('queue-counter').textContent = `${done} / ${queue.length} הושלמו`;
+  const list = document.getElementById('queue-list');
+  list.innerHTML = '';
+  queue.forEach(item => list.appendChild(buildQueueRow(item)));
+}
 
-  currentStartTime = Date.now();
+function buildQueueRow(item) {
+  const icons = { waiting:'🕐', processing:'⚙️', done:'✅', error:'❌' };
+  const div = document.createElement('div');
+  div.className = `queue-item qi-${item.status}`;
+  div.id = `qi-${item.id}`;
+  const isProc = item.status === 'processing';
+  const isDone = item.status === 'done';
+  const isErr  = item.status === 'error';
+  const statusColor = isErr ? 'color:var(--red)' : isDone ? 'color:var(--green)' : '';
+  div.innerHTML = `
+    <span class="qi-icon">${icons[item.status]}</span>
+    <div class="qi-info">
+      <div class="qi-name" title="${item.file.name}">${item.file.name}</div>
+      ${isProc ? `<div class="qi-bar-wrap"><div class="qi-bar" id="qbar-${item.id}" style="width:${item.progress}%"></div></div>` : ''}
+      <div class="qi-status" style="${statusColor}">${isProc ? (item.statusText||'מעבד...') : item.status==='waiting' ? 'ממתין...' : isDone ? 'הושלם בהצלחה' : (item.error||'שגיאה')}</div>
+    </div>
+    ${isDone ? `<button class="btn-sm primary" onclick="window.location='/api/download/${item.jobId}'">הורד</button>` : ''}
+    ${isErr  ? `<button class="btn-sm danger" onclick="removeQueueItem(${item.id})">הסר</button>` : ''}
+  `;
+  return div;
+}
 
-  const fd = new FormData();
-  fd.append('file', file);
+function patchQueueRow(item) {
+  const el = document.getElementById(`qi-${item.id}`);
+  if (!el) return;
+  const newEl = buildQueueRow(item);
+  el.replaceWith(newEl);
+  // update counter
+  const done = queue.filter(i => i.status === 'done').length;
+  document.getElementById('queue-counter').textContent = `${done} / ${queue.length} הושלמו`;
+}
+
+function patchBar(item) {
+  const bar = document.getElementById(`qbar-${item.id}`);
+  if (bar) bar.style.width = item.progress + '%';
+  const statusEl = document.querySelector(`#qi-${item.id} .qi-status`);
+  if (statusEl) statusEl.textContent = item.statusText || 'מעבד...';
+}
+
+function removeQueueItem(id) {
+  queue = queue.filter(i => i.id !== id);
+  renderQueue();
+}
+
+// ── Sequential processor ──────────────────────────────────
+async function processNextInQueue() {
+  if (isProcessing) return;
+  const item = queue.find(i => i.status === 'waiting');
+  if (!item) return;
+  isProcessing = true;
+
+  item.status = 'processing'; item.progress = 5; item.statusText = 'מעלה...';
+  patchQueueRow(item);
 
   try {
-    const res = await fetch('/api/upload', { method: 'POST', body: fd });
+    const fd = new FormData();
+    fd.append('file', item.file);
+    const res = await fetch('/api/upload', { method:'POST', body:fd });
     const data = await res.json();
     if (data.error) throw new Error(data.error);
-    currentJobId = data.job_id;
-    pollStatus();
-  } catch (e) {
-    showError(e.message);
+    item.jobId = data.job_id;
+    await pollQueueItem(item);
+  } catch(e) {
+    item.status = 'error'; item.error = e.message;
+    patchQueueRow(item);
+    isProcessing = false;
+    processNextInQueue();
   }
 }
 
-function setProgress(pct, label, timeMsg) {
-  document.getElementById('progress-bar').style.width = pct + '%';
-  document.getElementById('progress-label').textContent = label;
-  if (timeMsg) document.getElementById('progress-time').textContent = timeMsg;
+function pollQueueItem(item) {
+  return new Promise(resolve => {
+    const iv = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/status/${item.jobId}`);
+        const data = await res.json();
+        const pct = data.progress || 5;
+        item.progress = pct;
+        item.statusText = PROC_LABELS[pct] || `${pct}%`;
+        patchBar(item);
+        if (data.status === 'done') {
+          clearInterval(iv);
+          item.status = 'done';
+          patchQueueRow(item);
+          loadHistory();
+          isProcessing = false;
+          processNextInQueue();
+          resolve();
+        } else if (data.status === 'error') {
+          clearInterval(iv);
+          item.status = 'error'; item.error = data.error || 'שגיאה בעיבוד';
+          patchQueueRow(item);
+          isProcessing = false;
+          processNextInQueue();
+          resolve();
+        }
+      } catch(e) {}
+    }, 1000);
+  });
 }
 
-const LABELS = {
-  5:  'מתחיל עיבוד...',
-  10: 'טוען קובץ...',
-  30: 'בודק עמודים...',
-  50: 'מנגיש תוכן...',
-  90: 'מוסיף תיוג PDF/UA...',
-  100: 'הושלם!'
-};
-
-function formatTime(seconds) {
-  if (seconds < 60) return `${Math.round(seconds)}s`;
-  const mins = Math.floor(seconds / 60);
-  const secs = Math.round(seconds % 60);
-  return `${mins}m ${secs}s`;
-}
-
-function pollStatus() {
-  if (pollInterval) clearInterval(pollInterval);
-  document.getElementById('proc-status').textContent = 'מעבד...';
-
-  pollInterval = setInterval(async () => {
-    try {
-      const res = await fetch(`/api/status/${currentJobId}`);
-      const data = await res.json();
-
-      const pct = data.progress || 5;
-      const label = LABELS[pct] || `${pct}%`;
-      const elapsed = (Date.now() - currentStartTime) / 1000;
-      const timeMsg = `⏱ זמן עבודה: ${formatTime(elapsed)}`;
-      setProgress(pct, label, timeMsg);
-
-      if (data.status === 'done') {
-        clearInterval(pollInterval);
-        showSuccess();
-        loadHistory();
-      } else if (data.status === 'error') {
-        clearInterval(pollInterval);
-        showError(data.error || 'שגיאה בעיבוד');
-      }
-    } catch(e) {}
-  }, 1000);
-}
-
-async function showSuccess() {
-  document.getElementById('processing-box').style.display = 'none';
-  document.getElementById('features-list').style.display = 'block';
-
-  const box = document.getElementById('result-box');
-  box.className = 'result-box success';
-  box.style.display = 'flex';
-  document.getElementById('result-icon').textContent = '✅';
-  document.getElementById('result-title').textContent = 'המסמך הונגש בהצלחה';
-  document.getElementById('result-sub').textContent = 'הקובץ עומד בתקן PDF/UA וIS 5568';
-
-  try {
-    const res = await fetch(`/api/validate/${currentJobId}`);
-    const validation = await res.json();
-    if (validation.score !== undefined) {
-      const score = Math.round(validation.score);
-      const scoreDisplay = document.getElementById('accessibility-score-display');
-      scoreDisplay.style.display = 'block';
-      document.getElementById('score-text').textContent = `${score}%`;
-      const scoreFill = document.getElementById('score-fill');
-      scoreFill.style.width = score + '%';
-      if (score >= 80) {
-        scoreFill.style.background = 'linear-gradient(90deg, var(--green), #84CC16)';
-        document.getElementById('score-text').style.color = 'var(--green)';
-      } else if (score >= 70) {
-        scoreFill.style.background = 'linear-gradient(90deg, #FBBF24, #F59E0B)';
-        document.getElementById('score-text').style.color = '#F59E0B';
-      } else {
-        scoreFill.style.background = 'linear-gradient(90deg, #FB7185, #F43F5E)';
-        document.getElementById('score-text').style.color = '#F43F5E';
-      }
-    }
-  } catch(e) {}
-
-  const btn = document.getElementById('btn-download');
-  btn.style.display = 'block';
-  btn.onclick = () => window.location = `/api/download/${currentJobId}`;
-
-  setTimeout(() => {
-    dropZone.style.display = 'block';
-    box.style.display = 'none';
-    document.getElementById('processing-box').style.display = 'none';
-    document.getElementById('features-list').style.display = 'none';
-    document.getElementById('accessibility-score-display').style.display = 'none';
-    setProgress(0, '', '');
-    fileInput.value = '';
-    currentJobId = null;
-  }, 6000);
+// ── Helpers ───────────────────────────────────────────────
+function showFileWarning(msg, type) {
+  const w = document.getElementById('file-warning');
+  w.textContent = msg;
+  w.style.display = 'block';
+  w.style.background = type === 'error' ? 'var(--red-s)' : '#FFFBEB';
+  w.style.color      = type === 'error' ? 'var(--red)'   : '#92400E';
+  w.style.border     = type === 'error' ? '1px solid #FCA5A5' : '1px solid #FCD34D';
+  setTimeout(() => { w.style.display = 'none'; }, 4000);
 }
 
 function showError(msg) {
-  document.getElementById('processing-box').style.display = 'none';
-  document.getElementById('features-list').style.display = 'none';
-  dropZone.style.display = 'block';
   const box = document.getElementById('result-box');
   box.className = 'result-box error';
   box.style.display = 'flex';
@@ -685,15 +722,31 @@ function renderHistory(docs) {
     return;
   }
 
+  const ACCESSIBILITY_LABELS = {
+    'full_accessible':          { cls: 'badge-done',   icon: '✓', text: 'הונגש ומוכן לפרסום' },
+    'basic_accessible_scanned': { cls: 'badge-basic',  icon: '⚡', text: 'הנגשה בסיסית (סרוק)' },
+    'review_required':          { cls: 'badge-review', icon: '⚠', text: 'דורש בדיקה ידנית' },
+    'non_compliant':            { cls: 'badge-error',  icon: '✗', text: 'לא אושר כנגיש' },
+    'needs_review':             { cls: 'badge-review', icon: '⚠', text: 'דורש בדיקה ידנית' },
+  };
+
   tbody.innerHTML = docs.map(d => {
-    const badge = d.status === 'done'
-      ? `<span class="badge badge-done">✓ הושלם</span>`
-      : d.status === 'error'
-      ? `<span class="badge badge-error">⚠ שגיאה</span>`
-      : `<span class="badge badge-proc">⟳ מעבד</span>`;
+    let badge;
+    if (d.status === 'error') {
+      badge = `<span class="badge badge-error">⚠ שגיאה</span>`;
+    } else if (d.status !== 'done') {
+      badge = `<span class="badge badge-proc">⟳ מעבד</span>`;
+    } else {
+      const vr = (typeof d.validation_report === 'object' && d.validation_report) ? d.validation_report : {};
+      const aStatus = vr.status || 'full_accessible';
+      const srcType = vr.source_type === 'scanned' ? ' · סרוק' : (vr.source_type === 'digital' ? ' · מקורי' : '');
+      const entry = ACCESSIBILITY_LABELS[aStatus] || { cls: 'badge-done', icon: '✓', text: 'הושלם' };
+      badge = `<span class="badge ${entry.cls}" title="${aStatus}${srcType}">${entry.icon} ${entry.text}${srcType}</span>`;
+    }
 
     const actions = d.status === 'done'
       ? `<button class="btn-sm primary" onclick="window.location='/api/download/${d.id}'">הורדה</button>
+         <button class="btn-sm" style="background:var(--blue-s);color:var(--blue)" onclick="openReview('${d.id}','${d.original_name.replace(/'/g,"\\'")}')">סקור מבנה</button>
          <button class="btn-sm danger" onclick="deleteDoc('${d.id}')">מחיקה</button>`
       : `<button class="btn-sm danger" onclick="deleteDoc('${d.id}')">מחיקה</button>`;
 
@@ -751,9 +804,388 @@ async function updateStats() {
   } catch(e) {}
 }
 
+function showWarning(msg, type) {
+  const el = document.getElementById('file-warning');
+  el.style.display = 'block';
+  if (type === 'error') {
+    el.style.background = 'var(--red-s)';
+    el.style.color = 'var(--red)';
+    el.style.border = '1px solid #FCA5A5';
+  } else {
+    el.style.background = 'var(--ora-s)';
+    el.style.color = '#92400E';
+    el.style.border = '1px solid #FCD34D';
+  }
+  el.textContent = msg;
+}
+
 // Init
 loadHistory();
 setInterval(loadHistory, 20000);
+</script>
+
+<!-- ═══════════════════════════════════════════════════════════
+     Review UI — Structure editor modal
+     ═══════════════════════════════════════════════════════════ -->
+<style>
+/* Modal overlay */
+.rv-overlay {
+  display:none; position:fixed; inset:0;
+  background:rgba(0,0,0,.55); z-index:900;
+  align-items:center; justify-content:center;
+}
+.rv-overlay.open { display:flex; }
+
+.rv-modal {
+  background:#fff; border-radius:12px;
+  width:min(780px,96vw); max-height:90vh;
+  display:flex; flex-direction:column;
+  box-shadow:0 24px 64px rgba(0,0,0,.25);
+  overflow:hidden;
+}
+.rv-head {
+  padding:14px 20px; background:var(--blue);
+  display:flex; align-items:center; gap:10px; color:#fff; flex-shrink:0;
+}
+.rv-head h3 { font-size:14px; font-weight:600; flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.rv-close-btn {
+  background:rgba(255,255,255,.2); border:none; color:#fff;
+  border-radius:6px; padding:4px 10px; cursor:pointer; font-size:18px; line-height:1;
+}
+.rv-close-btn:hover { background:rgba(255,255,255,.35); }
+
+.rv-body {
+  flex:1; overflow-y:auto; padding:16px 20px;
+  font-size:13px;
+}
+.rv-empty { color:var(--gray-3); text-align:center; padding:40px; }
+
+/* Element rows */
+.rv-elem {
+  display:flex; align-items:flex-start; gap:8px;
+  padding:5px 6px; border-radius:6px; margin-bottom:3px;
+  border:1px solid transparent;
+}
+.rv-elem:hover { background:var(--gray-5); border-color:var(--gray-4); }
+.rv-elem.rv-table-row { margin-right:12px; }
+.rv-elem.rv-cell { margin-right:24px; }
+
+/* Type badge / selector */
+.rv-type {
+  flex-shrink:0; font-size:10px; font-weight:700; border-radius:4px;
+  padding:2px 6px; cursor:pointer; border:1px solid transparent;
+  min-width:44px; text-align:center; user-select:none;
+}
+.rv-type:hover { opacity:.8; }
+.rv-type[data-t="H1"]    { background:#DBEAFE; color:#1D4ED8; }
+.rv-type[data-t="H2"]    { background:#EDE9FE; color:#6D28D9; }
+.rv-type[data-t="H3"]    { background:#FCE7F3; color:#9D174D; }
+.rv-type[data-t="P"]     { background:#F3F4F6; color:#374151; }
+.rv-type[data-t="L"]     { background:#D1FAE5; color:#065F46; }
+.rv-type[data-t="Table"] { background:#FEF3C7; color:#92400E; }
+.rv-type[data-t="TR"]    { background:#FEF9C3; color:#713F12; }
+.rv-type[data-t="TH"]    { background:#FDE68A; color:#78350F; }
+.rv-type[data-t="TD"]    { background:#FEF9C3; color:#92400E; }
+.rv-type[data-t="Figure"]{ background:#CFFAFE; color:#164E63; }
+
+/* Inline text edit */
+.rv-text {
+  flex:1; background:transparent; border:none; outline:none;
+  font-family:inherit; font-size:13px; color:var(--gray-1);
+  padding:1px 4px; border-radius:3px; resize:none; min-height:22px;
+  direction:rtl; line-height:1.5;
+}
+.rv-text:focus { background:#F8FAFF; border:1px solid var(--blue-l); }
+
+/* Type picker popup */
+.rv-picker {
+  display:none; position:absolute; background:#fff;
+  border:1px solid var(--gray-4); border-radius:8px;
+  box-shadow:var(--shadow-lg); padding:6px;
+  z-index:1000; flex-wrap:wrap; gap:4px;
+  max-width:220px;
+}
+.rv-picker.open { display:flex; }
+.rv-pick-opt {
+  font-size:11px; font-weight:700; padding:4px 8px;
+  border-radius:4px; cursor:pointer; border:1px solid transparent;
+}
+.rv-pick-opt:hover { border-color:var(--blue-l); }
+
+/* Footer */
+.rv-foot {
+  padding:12px 20px; background:var(--gray-5); border-top:1px solid var(--gray-4);
+  display:flex; justify-content:space-between; align-items:center; flex-shrink:0; gap:8px;
+}
+.rv-note { font-size:11px; color:var(--gray-3); flex:1; }
+.rv-save-btn {
+  background:var(--blue); color:#fff; border:none;
+  border-radius:7px; padding:8px 20px; font-size:13px; font-weight:600;
+  cursor:pointer; transition:opacity .15s;
+}
+.rv-save-btn:hover { opacity:.85; }
+.rv-save-btn:disabled { opacity:.4; cursor:not-allowed; }
+.rv-cancel-btn {
+  background:transparent; color:var(--gray-2); border:1px solid var(--gray-4);
+  border-radius:7px; padding:8px 16px; font-size:13px; cursor:pointer;
+}
+.rv-spinner { font-size:11px; color:var(--gray-3); }
+</style>
+
+<!-- Modal DOM -->
+<div class="rv-overlay" id="rv-overlay" onclick="if(event.target===this)closeReview()">
+  <div class="rv-modal" role="dialog" aria-modal="true" aria-labelledby="rv-title">
+    <div class="rv-head">
+      <span style="font-size:18px">📋</span>
+      <h3 id="rv-title">עץ מבנה מסמך</h3>
+      <button class="rv-close-btn" onclick="closeReview()" aria-label="סגור">✕</button>
+    </div>
+    <div class="rv-body" id="rv-body">
+      <div class="rv-empty">טוען מבנה...</div>
+    </div>
+    <div class="rv-foot">
+      <span class="rv-note" id="rv-note"></span>
+      <button class="rv-cancel-btn" onclick="closeReview()">ביטול</button>
+      <button class="rv-save-btn" id="rv-save-btn" onclick="saveStructure()">שמור ויצא מחדש</button>
+    </div>
+  </div>
+</div>
+
+<!-- Type-picker popup (shared, repositioned via JS) -->
+<div class="rv-picker" id="rv-picker">
+  <div class="rv-pick-opt rv-type" data-t="H1"    style="background:#DBEAFE;color:#1D4ED8">H1</div>
+  <div class="rv-pick-opt rv-type" data-t="H2"    style="background:#EDE9FE;color:#6D28D9">H2</div>
+  <div class="rv-pick-opt rv-type" data-t="H3"    style="background:#FCE7F3;color:#9D174D">H3</div>
+  <div class="rv-pick-opt rv-type" data-t="P"     style="background:#F3F4F6;color:#374151">P</div>
+  <div class="rv-pick-opt rv-type" data-t="L"     style="background:#D1FAE5;color:#065F46">רשימה</div>
+  <div class="rv-pick-opt rv-type" data-t="Table" style="background:#FEF3C7;color:#92400E">טבלה</div>
+  <div class="rv-pick-opt rv-type" data-t="TH"    style="background:#FDE68A;color:#78350F">TH</div>
+  <div class="rv-pick-opt rv-type" data-t="TD"    style="background:#FEF9C3;color:#92400E">TD</div>
+  <div class="rv-pick-opt rv-type" data-t="TR"    style="background:#FEF9C3;color:#713F12">TR</div>
+  <div class="rv-pick-opt rv-type" data-t="Figure"style="background:#CFFAFE;color:#164E63">תמונה</div>
+</div>
+
+<script>
+// ── Review UI state ──────────────────────────────────────────────────────
+let rvJobId   = null;
+let rvStruct  = [];   // working copy of structure array
+let rvDirty   = false;
+let rvPicker  = null; // {elem, path} for open type-picker
+
+const ELEM_LABELS = {
+  H1:'H1 — כותרת ראשית', H2:'H2 — כותרת משנה', H3:'H3 — כותרת שלישית',
+  P:'P — פסקה', L:'L — רשימה', LI:'LI — פריט', LBody:'LBody',
+  Table:'טבלה', TR:'שורת טבלה', TH:'TH — כותרת עמודה', TD:'TD — תא',
+  Figure:'Figure — תמונה', Sect:'Sect', Document:'Document',
+};
+const LEAF_TYPES = new Set(['H1','H2','H3','P','LBody','TH','TD','Figure','Caption','Note']);
+const INDENT_TYPES = {L:12, LI:12, LBody:24, Table:12, TR:24, TH:36, TD:36};
+
+// ── Open / close ─────────────────────────────────────────────────────────
+async function openReview(jobId, fileName) {
+  rvJobId  = jobId;
+  rvDirty  = false;
+  document.getElementById('rv-title').textContent = fileName || 'עץ מבנה מסמך';
+  document.getElementById('rv-body').innerHTML    = '<div class="rv-empty">טוען מבנה...</div>';
+  document.getElementById('rv-note').textContent  = '';
+  document.getElementById('rv-save-btn').disabled = false;
+  document.getElementById('rv-overlay').classList.add('open');
+
+  try {
+    const res  = await fetch(`/api/structure/${jobId}`);
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+
+    rvStruct = data.structure || [];
+    if (!rvStruct.length) {
+      document.getElementById('rv-body').innerHTML =
+        `<div class="rv-empty">אין מבנה טקסטואלי — המסמך סרוק או שאין בלוקי טקסט שזוהו.<br>
+         המבנה יבנה מניתוח AI בלבד.</div>`;
+      document.getElementById('rv-note').textContent = data.note || '';
+      return;
+    }
+    renderReview();
+    document.getElementById('rv-note').textContent =
+      `${rvStruct.length} אלמנטים · לחץ על סוג לשינוי · ערוך טקסט ישירות`;
+  } catch(e) {
+    document.getElementById('rv-body').innerHTML =
+      `<div class="rv-empty" style="color:var(--red)">שגיאה: ${e.message}</div>`;
+  }
+}
+
+function closeReview() {
+  document.getElementById('rv-overlay').classList.remove('open');
+  closePicker();
+  rvJobId = null; rvStruct = [];
+}
+
+// ── Render tree ───────────────────────────────────────────────────────────
+function renderReview() {
+  const body = document.getElementById('rv-body');
+  body.innerHTML = '';
+  const frag = document.createDocumentFragment();
+  rvStruct.forEach((elem, idx) => {
+    renderElem(frag, elem, [idx], 0);
+  });
+  body.appendChild(frag);
+}
+
+function renderElem(container, elem, path, depth) {
+  const indent = (INDENT_TYPES[elem.type] || 0) * depth;
+  const isLeaf = LEAF_TYPES.has(elem.type);
+
+  const row = document.createElement('div');
+  row.className = 'rv-elem';
+  row.style.paddingRight = (6 + indent) + 'px';
+  row.dataset.path = JSON.stringify(path);
+
+  // Type badge
+  const badge = document.createElement('span');
+  badge.className = 'rv-type';
+  badge.dataset.t = elem.type;
+  badge.textContent = elem.type;
+  badge.title = ELEM_LABELS[elem.type] || elem.type;
+  badge.addEventListener('click', (e) => {
+    e.stopPropagation();
+    openPicker(badge, path);
+  });
+  row.appendChild(badge);
+
+  // Text (only for leaf elements)
+  if (isLeaf || elem.text) {
+    const ta = document.createElement('textarea');
+    ta.className = 'rv-text';
+    ta.value = elem.text || '';
+    ta.rows = 1;
+    ta.placeholder = 'טקסט...';
+    ta.addEventListener('input', () => {
+      autoGrow(ta);
+      setPath(rvStruct, path, 'text', ta.value);
+      rvDirty = true;
+    });
+    // auto-grow on load
+    setTimeout(() => autoGrow(ta), 0);
+    row.appendChild(ta);
+  } else {
+    // Group element label
+    const lbl = document.createElement('span');
+    lbl.style.cssText = 'color:var(--gray-3);font-size:11px;padding:2px 4px;flex:1';
+    lbl.textContent = elem.children ? `(${elem.children.length} ילדים)` : '';
+    row.appendChild(lbl);
+  }
+
+  // Delete button
+  const del = document.createElement('button');
+  del.textContent = '×';
+  del.title = 'הסר אלמנט';
+  del.style.cssText = 'border:none;background:none;color:var(--gray-3);cursor:pointer;font-size:16px;padding:0 4px;flex-shrink:0;line-height:1';
+  del.addEventListener('click', () => removeElem(path));
+  row.appendChild(del);
+
+  container.appendChild(row);
+
+  // Render children
+  if (elem.children && elem.children.length) {
+    elem.children.forEach((child, ci) => {
+      renderElem(container, child, [...path, 'children', ci], depth + 1);
+    });
+  }
+}
+
+function autoGrow(ta) {
+  ta.style.height = 'auto';
+  ta.style.height = ta.scrollHeight + 'px';
+}
+
+// ── Type picker ───────────────────────────────────────────────────────────
+function openPicker(badgeEl, path) {
+  closePicker();
+  rvPicker = { path };
+  const picker = document.getElementById('rv-picker');
+  picker.classList.add('open');
+  const rect = badgeEl.getBoundingClientRect();
+  picker.style.left = rect.left + 'px';
+  picker.style.top  = (rect.bottom + 4 + window.scrollY) + 'px';
+  picker.style.position = 'fixed';
+
+  picker.querySelectorAll('.rv-pick-opt').forEach(opt => {
+    opt.onclick = () => {
+      const newType = opt.dataset.t;
+      setPath(rvStruct, path, 'type', newType);
+      rvDirty = true;
+      renderReview();
+      closePicker();
+    };
+  });
+
+  // Close on outside click
+  setTimeout(() => document.addEventListener('click', closePicker, {once:true}), 0);
+}
+
+function closePicker() {
+  const p = document.getElementById('rv-picker');
+  if (p) p.classList.remove('open');
+  rvPicker = null;
+}
+
+// ── Data helpers ──────────────────────────────────────────────────────────
+function getPath(obj, path) {
+  let cur = obj;
+  for (const k of path) cur = cur[k];
+  return cur;
+}
+
+function setPath(arr, path, key, val) {
+  // path is like [0] or [0,'children',1]
+  let cur = arr;
+  for (let i = 0; i < path.length - 1; i++) cur = cur[path[i]];
+  cur[path[path.length - 1]][key] = val;
+}
+
+function removeElem(path) {
+  let parent = rvStruct;
+  for (let i = 0; i < path.length - 2; i++) parent = parent[path[i]];
+  if (path.length === 1) {
+    rvStruct.splice(path[0], 1);
+  } else {
+    const parentArr = path.length === 1 ? rvStruct : parent[path[path.length - 2]];
+    const arr = Array.isArray(parentArr) ? parentArr : parentArr.children;
+    if (arr) arr.splice(path[path.length - 1], 1);
+  }
+  rvDirty = true;
+  renderReview();
+}
+
+// ── Save / re-export ──────────────────────────────────────────────────────
+async function saveStructure() {
+  if (!rvJobId) return;
+  const btn = document.getElementById('rv-save-btn');
+  btn.disabled = true;
+  btn.textContent = 'שומר...';
+  document.getElementById('rv-note').textContent = 'שומר מבנה ומתחיל עיבוד מחדש...';
+
+  try {
+    const res = await fetch(`/api/structure/${rvJobId}`, {
+      method: 'PUT',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({structure: rvStruct}),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'שגיאה בשמירה');
+
+    document.getElementById('rv-note').textContent =
+      data.reexporting
+        ? 'המבנה נשמר — עיבוד מחדש בוצע ברקע (כ-10-30 שניות)'
+        : 'המבנה נשמר בהצלחה';
+    btn.textContent = 'נשמר ✓';
+    rvDirty = false;
+    setTimeout(() => loadHistory(), 3000);
+  } catch(e) {
+    document.getElementById('rv-note').textContent = 'שגיאה: ' + e.message;
+    btn.disabled = false;
+    btn.textContent = 'שמור ויצא מחדש';
+  }
+}
 </script>
 </body>
 </html>

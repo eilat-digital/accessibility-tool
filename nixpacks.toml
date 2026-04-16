@@ -1,2 +1,9 @@
 [phases.setup]
-aptPkgs = ["tesseract-ocr", "tesseract-ocr-heb", "tesseract-ocr-ara", "tesseract-ocr-eng"]
+aptPkgs = [
+  "tesseract-ocr",
+  "tesseract-ocr-heb",
+  "tesseract-ocr-ara",
+  "tesseract-ocr-eng",
+  "poppler-utils",
+  "libreoffice"
+]

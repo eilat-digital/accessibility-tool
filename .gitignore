@@ -8,4 +8,8 @@ venv/
 .env
 test_input.pdf
 test_output.pdf
+test_pac_check.pdf
 *.zip
+logs/
+tools/
+.claude/

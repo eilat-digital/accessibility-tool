@@ -8,8 +8,6 @@ Pipeline order (matters — earlier classifiers claim blocks first):
   4. Residual        — everything else becomes a paragraph
 
 Output: an ordered list of StructElement objects ready for tag_builder.
-
-Version: 1.1.0 — semantic OCR reconstruction support added.
 """
 from __future__ import annotations
 
@@ -69,20 +67,16 @@ def sort_reading_order(blocks: List[TextBlock]) -> List[TextBlock]:
 # ---------------------------------------------------------------------------
 
 _LIST_PATTERNS: List[re.Pattern] = [
-    # Numeric:    "1." "1)" "(1)" "1 -" "1/"
-    re.compile(r"^[\(\[]?\d+[\.\)\]\-/]\s", re.UNICODE),
-    # Hebrew aleph-bet: "א." "א)" "(א)" "א-"
-    re.compile(r"^[\(\[]?[אבגדהוזחטיכלמנסעפצקרשת][\.\)\-\]]\s", re.UNICODE),
-    # Latin letters:   "a." "A." "a)" "(a)"
-    re.compile(r"^[\(\[]?[a-zA-Z][\.\)\]]\s", re.UNICODE),
+    # Numeric:    "1." "1)" "(1)" "1 -"
+    re.compile(r"^[\(\[]?\d+[\.\)\]]\s", re.UNICODE),
+    # Hebrew aleph-bet: "א." "א)" "(א)"
+    re.compile(r"^[\(\[]?[אבגדהוזחטיכלמנסעפצקרשת][\.\)]\s", re.UNICODE),
+    # Latin letters:   "a." "A."
+    re.compile(r"^[\(\[]?[a-zA-Z][\.\)]\s", re.UNICODE),
+    # Bullet characters
+    re.compile(r"^[-–—•·◦▪▸►→✓✗]\s"),
     # Roman numerals (i–xii only to avoid false positives)
     re.compile(r"^(?:ix|iv|vi{0,3}|xi|x|i{1,3})\.\s", re.I),
-    # Bullet characters (expanded)
-    re.compile(r"^[-–—•·◦▪▸►→✓✗◆◇■□●○]\s"),
-    # Arabic numerals with various separators
-    re.compile(r"^\d+[\.\)\]\-\s]+\S", re.UNICODE),
-    # Hebrew numbered lists with geresh
-    re.compile(r"^[א-ת]׳\.\s", re.UNICODE),
 ]
 
 # Definition-list item: "term" – definition  (Hebrew legal docs use geresh/quote)
@@ -96,23 +90,9 @@ _SECTION_COLON_RE = re.compile(r'^[^\n]{1,60}[:\uFF1A]\s*$', re.UNICODE)
 
 # Legal numbered-clause hierarchy: "1." "1.1." "1.1.1."
 _LEGAL_CLAUSE_RE = re.compile(r'^(\d+(?:\.\d+)*)\.\s+\S', re.UNICODE)
-
-# Enhanced key-value patterns for Hebrew and English documents
-_KEY_VALUE_RE = re.compile(
-    r'^(.{1,50}?)[\s]*[:\uFF1A][\s]*(.{1,200})$',  # Standard colon
-    re.UNICODE,
-)
-_KEY_VALUE_ALT_RE = re.compile(
-    r'^(.{1,50}?)[\s]*[-\u2013\u2014][\s]*(.{1,200})$',  # Dash separator
-    re.UNICODE,
-)
-_KEY_VALUE_PAREN_RE = re.compile(
-    r'^(.{1,50}?)[\s]*\([^\)]{1,100}\)$',  # Parenthetical values
-    re.UNICODE,
-)
-
+_KEY_VALUE_RE = re.compile(r'^(.{1,45}?)[\s]*[:\uFF1A][\s]*(.{1,140})$', re.UNICODE)
 _SIGNATURE_RE = re.compile(
-    r'(signature|signed|signatory|חתימ|חתום|מאשר|אישור|שם\s+החותם|תפקיד|חתימת|מטעם|בשם|נציג)',
+    r'(signature|signed|signatory|חתימ|חתום|מאשר|אישור|שם\s+החותם|תפקיד)',
     re.I | re.UNICODE,
 )
 
@@ -143,66 +123,29 @@ def _is_list_item(text: str) -> bool:
 
 
 def _is_key_value_text(text: str) -> bool:
-    """Enhanced key-value detection with multiple patterns."""
-    s = text.strip()
-    if not s:
+    m = _KEY_VALUE_RE.match(text.strip())
+    if not m:
         return False
-
-    # Check all key-value patterns
-    patterns = [_KEY_VALUE_RE, _KEY_VALUE_ALT_RE, _KEY_VALUE_PAREN_RE]
-    for pattern in patterns:
-        m = pattern.match(s)
-        if m:
-            label, value = m.group(1).strip(), m.group(2).strip()
-            if not label or not value:
-                continue
-            # More lenient validation
-            if len(label.split()) <= 8 and len(value.split()) <= 25:
-                return True
-    return False
+    label, value = m.group(1).strip(), m.group(2).strip()
+    if not label or not value:
+        return False
+    return len(label.split()) <= 6 and len(value.split()) <= 18
 
 
 def _split_key_value_text(text: str) -> Optional[Tuple[str, str]]:
-    """Enhanced key-value splitting with multiple patterns."""
-    s = text.strip()
-
-    # Try patterns in order of preference
-    patterns = [_KEY_VALUE_RE, _KEY_VALUE_ALT_RE, _KEY_VALUE_PAREN_RE]
-    for pattern in patterns:
-        m = pattern.match(s)
-        if m:
-            label, value = m.group(1).strip(), m.group(2).strip()
-            if label and value:
-                return label, value
-    return None
+    m = _KEY_VALUE_RE.match(text.strip())
+    if not m:
+        return None
+    return m.group(1).strip(), m.group(2).strip()
 
 
 def _is_signature_text(text: str) -> bool:
-    """Enhanced signature detection with multiple heuristics."""
     stripped = text.strip()
     if not stripped:
         return False
-
-    # Direct keyword match
     if _SIGNATURE_RE.search(stripped):
         return True
-
-    # Signature line patterns (underscores, etc.)
-    if len(stripped) <= 100 and re.search(r'_{4,}|-{4,}', stripped):
-        return True
-
-    # Short lines that might be signature placeholders
-    words = len(stripped.split())
-    if words <= 3 and len(stripped) <= 50:
-        # Check for signature-like patterns
-        if re.search(r'(חותם|אישור|חתימה)', stripped, re.UNICODE | re.I):
-            return True
-        # Lines with just names or titles
-        if not re.search(r'[0-9\.\,\;\:\(\)]', stripped):
-            return True
-
-    # Position-based: very short lines at bottom of page (handled elsewhere)
-    return False
+    return len(stripped) <= 80 and re.search(r'_{4,}|-{4,}', stripped) is not None
 
 
 def _is_hebrew_dominant(text: str) -> bool:
@@ -217,7 +160,7 @@ def _strip_list_marker(text: str) -> str:
     # Remove "1." / "א." / "A." style markers
     s = re.sub(r"^[\(\[]?[\daא-תa-zA-Z]+[\.\)\]]\s+", "", s)
     # Remove bullet
-    s = re.sub(r"^[-–—•·◦▪▸►→✓✗◆◇■□●○]\s+", "", s)
+    s = re.sub(r"^[-–—•·◦▪▸►→✓✗]\s+", "", s)
     return s.strip()
 
 
@@ -232,7 +175,6 @@ class HeadingDetector:
       - Bold flag
       - Vertical gap above the block vs. average gap on that page
       - Short word count (headings are brief)
-      - Enhanced Hebrew heading patterns and spacing heuristics
     """
 
     _MAX_HEADING_WORDS = 25
@@ -272,14 +214,6 @@ class HeadingDetector:
             for pg, blks in by_page.items()
         }
 
-        # Enhanced: Track page margins for better header/footer detection
-        self._page_margins: Dict[int, Tuple[float, float]] = {}
-        for pg, pg_blocks in by_page.items():
-            if pg_blocks:
-                xs = [b.x for b in pg_blocks]
-                ys = [b.y for b in pg_blocks]
-                self._page_margins[pg] = (min(xs), max(ys))
-
     def _gap_above(self, block: TextBlock) -> float:
         pg_sorted = self._sorted_by_page.get(block.page_num, [])
         for i, b in enumerate(pg_sorted):
@@ -288,35 +222,6 @@ class HeadingDetector:
                     return block.y   # gap from page top
                 return block.y - pg_sorted[i - 1].y_bottom
         return 0.0
-
-    def _is_near_page_margin(self, block: TextBlock, margin_type: str = 'top') -> bool:
-        """Check if block is near page top/bottom margin."""
-        margins = self._page_margins.get(block.page_num)
-        if not margins:
-            return False
-        min_x, max_y = margins
-        if margin_type == 'top':
-            return block.y < 50  # within 50pts of top
-        elif margin_type == 'bottom':
-            return block.y > max_y - 50  # within 50pts of bottom
-        return False
-
-    def _is_hebrew_heading_pattern(self, text: str) -> bool:
-        """Enhanced Hebrew heading pattern detection."""
-        # Common Hebrew heading patterns
-        hebrew_patterns = [
-            r'^פרק\s+\d+',  # "Chapter X"
-            r'^סעיף\s+\d+',  # "Section X"
-            r'^תקנה\s+\d+',  # "Regulation X"
-            r'^נספח\s+[א-ת]',  # "Appendix A"
-            r'^טבלת\s+',  # "Table"
-            r'^רשימת\s+',  # "List of"
-            r'^הגדרות',  # "Definitions"
-            r'^מבוא',  # "Introduction"
-            r'^סיכום',  # "Summary"
-            r'^חתימה',  # "Signature"
-        ]
-        return any(re.search(pattern, text, re.UNICODE | re.I) for pattern in hebrew_patterns)
 
     def classify(self, block: TextBlock) -> Optional[str]:
         text = block.text.strip()
@@ -333,12 +238,6 @@ class HeadingDetector:
         avg_gap   = self._avg_gap.get(block.page_num, 0.0)
         large_gap = gap > avg_gap * 1.8 and avg_gap > 0
 
-        # Enhanced: Hebrew heading patterns get priority
-        if self._is_hebrew_heading_pattern(text):
-            if words <= 8 and (bold or large_gap):
-                return "H2"
-            return "H3"
-
         # --- Colon-terminated section header (e.g. "נוכחים:", "על סדר היום:") ---
         # Applies regardless of font/bold/gap — common Israeli protocol pattern.
         # Limit to short standalone headers (≤6 words, no mid-sentence punctuation).
@@ -348,23 +247,12 @@ class HeadingDetector:
                 return "H1"
             return "H2"
 
-        # Enhanced: Check for page position hints
-        near_top = self._is_near_page_margin(block, 'top')
-        near_bottom = self._is_near_page_margin(block, 'bottom')
-
         # --- First block on the first page → likely the document title (H1) ---
         min_page = min(self._sorted_by_page.keys()) if self._sorted_by_page else 1
         if block.page_num == min_page and words <= 12:
             pg_blocks = self._sorted_by_page.get(block.page_num, [])
             if pg_blocks and pg_blocks[0] is block:
                 return "H1"
-
-        # Enhanced: Near top of page with large gap often indicates major heading
-        if near_top and large_gap and gap > avg_gap * 2.0:
-            if words <= 10:
-                return "H1"
-            elif words <= 15:
-                return "H2"
 
         # Uniform-font document (all text same size — common in Israeli official docs).
         # Fall back to bold + gap + word-count heuristics.
@@ -382,7 +270,7 @@ class HeadingDetector:
                 return "H3"
             return None
 
-        # Variable-font document: percentile-based classification with enhancements
+        # Variable-font document: percentile-based classification
         if fs >= self.p90:
             return "H1"
         if fs >= self.p75:
@@ -390,9 +278,6 @@ class HeadingDetector:
         if fs >= self.p60 or (bold and fs > self.median):
             if bold or large_gap:
                 return "H3"
-        # Enhanced: Additional check for medium-sized bold text near top
-        if bold and fs > self.median and near_top and words <= 12:
-            return "H3"
         return None
 
 
@@ -403,7 +288,7 @@ class HeadingDetector:
 class TableDetector:
     """
     Detects tables by finding text blocks whose X-centres align across
-    multiple rows. Enhanced with better clustering and multi-column detection.
+    multiple rows.
 
     Algorithm
     ---------
@@ -411,16 +296,14 @@ class TableDetector:
     2. For each row, record the sorted X-centres of its blocks → "column sig".
     3. Consecutive rows whose column signatures are compatible (≥70 % of
        column centres within COL_THRESH) form a table candidate.
-    4. Enhanced: Allow for slight variations in column count and better alignment.
-    5. Candidates with ≥ MIN_ROWS rows and ≥ MIN_COLS columns are kept.
-    6. The first row of each table is treated as the header row (TH).
+    4. Candidates with ≥ MIN_ROWS rows and ≥ MIN_COLS columns are kept.
+    5. The first row of each table is treated as the header row (TH).
     """
 
     LINE_THRESH = 6.0    # pts — blocks within this vertical band share a row
-    COL_THRESH  = 18.0   # pts — column X-centres must be within this distance (tightened)
+    COL_THRESH  = 22.0   # pts — column X-centres must be within this distance
     MIN_ROWS    = 2
     MIN_COLS    = 2
-    MAX_COLS    = 10     # Prevent false positives with too many columns
 
     def detect(self, blocks: List[TextBlock]) -> Tuple[
         List[dict], Set[int]
@@ -448,7 +331,7 @@ class TableDetector:
     def _detect_page(self, blocks: List[TextBlock], page_num: int
                      ) -> Tuple[List[dict], Set[int]]:
         rows = self._group_rows(blocks)
-        multi = [(y, row) for y, row in rows if len(row) >= self.MIN_COLS and len(row) <= self.MAX_COLS]
+        multi = [(y, row) for y, row in rows if len(row) >= self.MIN_COLS]
         if len(multi) < self.MIN_ROWS:
             return [], set()
 
@@ -459,7 +342,7 @@ class TableDetector:
             centres = [b.center_x for b in sorted_row]
             triples.append((y, sorted_row, centres))
 
-        # Enhanced: Group consecutive compatible rows with better logic
+        # Group consecutive compatible rows
         groups: List[List[tuple]] = []
         current = [triples[0]]
         for triple in triples[1:]:
@@ -475,47 +358,12 @@ class TableDetector:
         for group in groups:
             if len(group) < self.MIN_ROWS:
                 continue
-            # Enhanced: Validate table structure
-            if self._is_valid_table(group):
-                td = self._build_table_dict(group, page_num)
-                tables.append(td)
-                for b in td["all_blocks"]:
-                    claimed.add(id(b))
+            td = self._build_table_dict(group, page_num)
+            tables.append(td)
+            for b in td["all_blocks"]:
+                claimed.add(id(b))
 
         return tables, claimed
-
-    def _is_valid_table(self, group: List[tuple]) -> bool:
-        """Validate that a group of rows forms a coherent table."""
-        if len(group) < self.MIN_ROWS:
-            return False
-
-        # Check column consistency
-        col_counts = [len(row) for _, row, _ in group]
-        avg_cols = statistics.mean(col_counts)
-        # Allow some variation but not too much
-        if max(col_counts) - min(col_counts) > 2:
-            return False
-        if avg_cols > self.MAX_COLS:
-            return False
-
-        # Check that columns are reasonably aligned
-        centres_list = [centres for _, _, centres in group]
-        if len(centres_list) < 2:
-            return True
-
-        # For each column position, check alignment across rows
-        max_cols = max(len(c) for c in centres_list)
-        for col_idx in range(max_cols):
-            col_positions = []
-            for centres in centres_list:
-                if col_idx < len(centres):
-                    col_positions.append(centres[col_idx])
-
-            if len(col_positions) >= len(group) * 0.6:  # Column present in most rows
-                if statistics.stdev(col_positions) > self.COL_THRESH:
-                    return False  # Too much variation in column position
-
-        return True
 
     def _group_rows(self, blocks: List[TextBlock]
                     ) -> List[Tuple[float, List[TextBlock]]]:
@@ -536,29 +384,13 @@ class TableDetector:
         return rows
 
     def _centres_compatible(self, ca: List[float], cb: List[float]) -> bool:
-        """Enhanced compatibility check allowing for missing columns."""
-        if not ca or not cb:
-            return False
-
-        # Allow column count difference of 1
         if abs(len(ca) - len(cb)) > 1:
             return False
-
-        # Try to match columns, allowing for some to be missing
-        matched = 0
-        total_possible = min(len(ca), len(cb))
-
-        # For each column in the shorter list, find closest match in longer
-        shorter, longer = (ca, cb) if len(ca) <= len(cb) else (cb, ca)
-
-        for short_centre in shorter:
-            # Find closest centre in longer list
-            closest_dist = min(abs(short_centre - long_centre) for long_centre in longer)
-            if closest_dist <= self.COL_THRESH:
-                matched += 1
-
-        # Require 70% of shorter list to match
-        return matched >= len(shorter) * 0.7
+        matched = sum(
+            1 for a, b in zip(ca, cb)
+            if abs(a - b) <= self.COL_THRESH
+        )
+        return matched >= min(len(ca), len(cb)) * 0.7
 
     def _build_table_dict(self, group: List[tuple], page_num: int) -> dict:
         rows_of_blocks = [row for _, row, _ in group]
@@ -866,7 +698,6 @@ class StructureDetector:
 
     def _implied_list_run(self, blocks: List[TextBlock], start: int,
                           hd: HeadingDetector) -> List[TextBlock]:
-        """Enhanced implied list detection with better heuristics."""
         first = blocks[start]
         if not self._is_implied_list_candidate(first, hd):
             return []
@@ -879,44 +710,30 @@ class StructureDetector:
                 break
             if not self._is_implied_list_candidate(block, hd):
                 break
-            # Enhanced: Check for reasonable horizontal alignment
             if abs(block.x - first.x) > _IMPLIED_LIST_X_TOLERANCE:
                 break
             gap = block.y - last.y_bottom
-            if gap < -2.0 or gap > max(32.0, last.height * 3.0):  # More lenient upper bound
+            if gap < -2.0 or gap > max(28.0, last.height * 2.6):
                 break
             if gaps and abs(gap - statistics.median(gaps)) > _IMPLIED_LIST_GAP_TOLERANCE:
                 break
-            # Enhanced: Check for similar text length patterns
-            if abs(len(block.text.strip()) - len(first.text.strip())) > 60:  # More lenient
+            if abs(len(block.text.strip()) - len(first.text.strip())) > 45:
                 break
             gaps.append(gap)
             run.append(block)
             last = block
 
-        # Enhanced: Require minimum items but allow shorter runs in some cases
-        if len(run) < _IMPLIED_LIST_MIN_ITEMS:
-            return []
-        # Additional check: ensure reasonable length consistency
-        lengths = [len(b.text.strip()) for b in run]
-        if statistics.stdev(lengths) > 40 and len(run) > 3:  # Too much variation
-            return []
-        return run
+        return run if len(run) >= _IMPLIED_LIST_MIN_ITEMS else []
 
     def _is_implied_list_candidate(self, block: TextBlock, hd: HeadingDetector) -> bool:
-        """Enhanced candidate detection for implied lists."""
         text = block.text.strip()
         if not text or _is_list_item(text) or _is_key_value_text(text):
             return False
         if _SECTION_COLON_RE.match(text) or _legal_clause_level(text) is not None:
             return False
-        # Enhanced: Allow slightly longer texts for implied lists
         if len(text) > _IMPLIED_LIST_MAX_CHARS or len(text.split()) > _IMPLIED_LIST_MAX_WORDS:
             return False
         if hd.classify(block):
-            return False
-        # Enhanced: Check for reasonable content (not just punctuation)
-        if not re.search(r'\w', text):  # Must contain word characters
             return False
         return True
 
@@ -1139,6 +956,7 @@ class StructureDetector:
                 i += 1
                 continue
 
+
             # --- paragraph ---
             flush_list()
             elements.append(StructElement.paragraph(
@@ -1152,19 +970,19 @@ class StructureDetector:
     # ------------------------------------------------------------------
     def _detect_headers_footers(self, blocks: List[TextBlock]) -> Set[int]:
         """
-        Enhanced detection of header/footer artifacts using position and repetition analysis.
-
-        Returns id(block) for blocks whose vertical position (quantised to 10 pt)
+        Return id(block) for blocks whose vertical position (quantised to 10 pt)
         appears near the top or bottom of the page across ≥40% of pages (min 3).
-        Also detects repeated text patterns that indicate headers/footers.
+
+        These are typical running headers / footers / page numbers that should
+        be excluded from semantic structure and treated as Artifacts.
         """
         by_page: Dict[int, List[TextBlock]] = defaultdict(list)
         for b in blocks:
             by_page[b.page_num].append(b)
 
         n_pages = len(by_page)
-        min_pages = max(3, int(n_pages * 0.35))  # Slightly more lenient
-        GRID = 8.0  # Finer grid for better precision
+        min_pages = max(3, int(n_pages * 0.40))
+        GRID = 10.0
 
         # bucket → {page_num → [block, ...]}
         bucket_to_pages: Dict[int, Dict[int, List[TextBlock]]] = defaultdict(
@@ -1172,9 +990,8 @@ class StructureDetector:
         )
         for pg, pg_blocks in by_page.items():
             sorted_pg = sorted(pg_blocks, key=lambda b: b.y)
-            # Look at top 4 and bottom 4 blocks per page for headers/footers
-            candidates = sorted_pg[:4] + sorted_pg[-4:]
-            for blk in candidates:
+            # Only look at the first 3 and last 3 blocks per page
+            for blk in sorted_pg[:3] + sorted_pg[-3:]:
                 bucket = int(blk.y / GRID)
                 bucket_to_pages[bucket][pg].append(blk)
 
@@ -1183,30 +1000,7 @@ class StructureDetector:
             if len(page_map) >= min_pages:
                 for blk_list in page_map.values():
                     for blk in blk_list:
-                        # Additional check: short text or page numbers
-                        text = blk.text.strip()
-                        if (len(text) <= 50 or
-                            re.search(r'\d+', text) or  # Contains numbers (page numbers)
-                            re.search(r'(page|עמוד)', text, re.I | re.UNICODE)):  # Page indicators
-                            artifact_ids.add(id(blk))
-
-        # Enhanced: Detect repeated text patterns across pages
-        text_positions: Dict[str, List[Tuple[int, float]]] = defaultdict(list)
-        for b in blocks:
-            text = b.text.strip()
-            if len(text) <= 100:  # Only consider short texts for repetition
-                text_positions[text].append((b.page_num, b.y))
-
-        for text, positions in text_positions.items():
-            if len(positions) >= min_pages:
-                # Check if positions are similar across pages
-                ys = [y for _, y in positions]
-                if len(ys) > 1 and statistics.stdev(ys) < 20.0:  # Similar vertical position
-                    # Mark all instances as artifacts
-                    for page_num, y in positions:
-                        for b in by_page[page_num]:
-                            if abs(b.y - y) < 5.0 and b.text.strip() == text:
-                                artifact_ids.add(id(b))
+                        artifact_ids.add(id(blk))
 
         return artifact_ids
 
@@ -1399,3 +1193,56 @@ def merge_ai_structure(
             merged.extend(_ai_dicts_to_elems(ai_pg, pg))
 
     return merged
+
+
+def _ai_dicts_to_elems(items: List[dict], page_num: int) -> List[StructElement]:
+    """Convert AI structure dicts to StructElement list."""
+    elements: List[StructElement] = []
+    list_buf: List[str] = []
+
+    _type_map = {
+        "h1": "H1", "h2": "H2", "h3": "H3",
+        "p": "P", "caption": "Caption",
+    }
+
+    def flush_list():
+        if not list_buf:
+            return
+        l = StructElement("L", page_num=page_num)
+        for txt in list_buf:
+            li = StructElement("LI", page_num=page_num)
+            li.add(StructElement("LBody", text=txt, page_num=page_num))
+            l.add(li)
+        elements.append(l)
+        list_buf.clear()
+
+    for item in items:
+        t = str(item.get("type", "p")).lower()
+        text = str(item.get("text", "")).strip()
+
+        if t == "li":
+            list_buf.append(text)
+            continue
+
+        flush_list()
+
+        if t in _type_map:
+            elements.append(StructElement(_type_map[t], text=text, page_num=page_num))
+        elif t == "tr":
+            # standalone tr — build a minimal Table wrapper
+            cells = item.get("cells", [])
+            tbl = StructElement("Table", page_num=page_num)
+            tr  = StructElement("TR", page_num=page_num)
+            for c in cells:
+                ct   = "TH" if str(c.get("type", "td")).lower() == "th" else "TD"
+                cell = StructElement(ct, text=str(c.get("text", "")), page_num=page_num)
+                if ct == "TH":
+                    cell.attrs["Scope"] = "Col"
+                tr.add(cell)
+            tbl.add(tr)
+            elements.append(tbl)
+        else:
+            elements.append(StructElement("P", text=text, page_num=page_num))
+
+    flush_list()
+    return elements

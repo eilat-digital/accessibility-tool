@@ -1,2 +1,8 @@
 [build]
-buildCommand = "apt-get update -y && apt-get install -y tesseract-ocr tesseract-ocr-heb tesseract-ocr-ara tesseract-ocr-eng && pip install -r requirements.txt"
+builder = "dockerfile"
+
+[deploy]
+healthcheckPath = "/api/health"
+healthcheckTimeout = 30
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 3
