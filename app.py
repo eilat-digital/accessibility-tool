@@ -9,6 +9,8 @@ import logging
 import secrets
 import hashlib
 
+os.environ.setdefault('PYTHONUTF8', '1')
+
 # טעינת .env אם קיים (פיתוח מקומי)
 _env_path = os.path.join(os.path.dirname(__file__), ".env")
 if os.path.exists(_env_path):
@@ -56,7 +58,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler(LOG_DIR / "app.log"),
+        logging.FileHandler(LOG_DIR / "app.log", encoding="utf-8"),
         logging.StreamHandler()
     ]
 )
@@ -93,8 +95,9 @@ UPLOAD_DIR = _DATA_DIR / "uploads"
 OUTPUT_DIR = _DATA_DIR / "outputs"
 DB_PATH    = _DATA_DIR / "db" / "history.db"
 SCRIPT_PATH = BASE_DIR / "scripts" / "build_accessible_pdf.py"
+TMP_RUNTIME_DIR = BASE_DIR / "tmp_runtime"
 
-for d in [UPLOAD_DIR, OUTPUT_DIR, BASE_DIR / "db"]:
+for d in [UPLOAD_DIR, OUTPUT_DIR, BASE_DIR / "db", TMP_RUNTIME_DIR]:
     d.mkdir(parents=True, exist_ok=True)
 
 # -- DB --
@@ -482,10 +485,16 @@ def process_pdf(job_id, input_path, output_path, original_name, file_size):
 
         # Count pages first
         logger.info(f"Analyzing PDF pages for job {job_id}")
+        page_count_env = os.environ.copy()
+        page_count_env['PYTHONUTF8'] = '1'
+        page_count_env['TMP'] = str(TMP_RUNTIME_DIR)
+        page_count_env['TEMP'] = str(TMP_RUNTIME_DIR)
         result = subprocess.run(
             [PYTHON, '-c',
-             f"import pikepdf; pdf=pikepdf.open('{input_path}'); print(len(pdf.pages))"],
-            capture_output=True, text=True, timeout=60
+             "import sys, pikepdf; pdf=pikepdf.open(sys.argv[1]); print(len(pdf.pages))",
+             str(input_path)],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
+            env=page_count_env
         )
         pages = int(result.stdout.strip()) if result.returncode == 0 else 0
         jobs[job_id]['progress'] = 30
@@ -514,13 +523,24 @@ def process_pdf(job_id, input_path, output_path, original_name, file_size):
         ]
         jobs[job_id]['progress'] = 50
 
+        script_env = os.environ.copy()
+        script_env['PYTHONUTF8'] = '1'
+        script_env['TMP'] = str(TMP_RUNTIME_DIR)
+        script_env['TEMP'] = str(TMP_RUNTIME_DIR)
+
         # Timeout דינמי: 5 דקות בסיס + 4 שניות לעמוד (OCR איטי)
         # מינימום 5 דק', מקסימום 60 דק' (מסמך 300 עמודים ≈ 20 דק')
         timeout_seconds = max(300, min(3600, 300 + pages * 4))
         logger.info(f"Processing timeout set to {timeout_seconds}s for {pages} pages")
         
-        proc = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=timeout_seconds)
-        logger.info(f"Script returncode={proc.returncode} for job {job_id}")
+        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout_seconds, env=script_env)
+        logger.info(f"[OCR DEBUG] SCRIPT_PATH={SCRIPT_PATH}")
+        logger.info(f"[OCR DEBUG] CMD={' '.join(map(str, cmd))}")
+        if proc is None:
+            raise RuntimeError("סקריפט ההנגשה לא החזיר תוצאה")
+        logger.info(f"[OCR DEBUG] returncode={proc.returncode}")
+        logger.info(f"[OCR DEBUG] stdout={proc.stdout[:4000]}")
+        logger.info(f"[OCR DEBUG] stderr={proc.stderr[:4000]}")
         jobs[job_id]['progress'] = 90
 
         if proc.returncode != 0:
@@ -550,6 +570,8 @@ def process_pdf(job_id, input_path, output_path, original_name, file_size):
         # Validate the generated PDF
         logger.info(f"Validating PDF for job {job_id}")
         validation_report = validate_pdf_accessibility(str(output_path))
+        if validation_report is None:
+            raise RuntimeError("בדיקת הנגישות לא החזירה תוצאה תקינה")
 
         # סיווג נגישות: full_accessible / basic_accessible_scanned / review_required
         validation_report['source_type'] = 'scanned' if is_scanned_source else 'digital'

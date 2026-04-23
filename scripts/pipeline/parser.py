@@ -20,7 +20,7 @@ from .models import TextBlock
 try:
     from pdfminer.high_level import extract_pages
     from pdfminer.layout import (
-        LTPage, LTTextBox, LTTextLine, LTChar, LTAnon,
+        LTPage, LTTextBox, LTTextLine, LTChar,
         LTFigure, LTLayoutContainer, LTLine, LTRect, LTCurve,
     )
     _PDFMINER_OK = True

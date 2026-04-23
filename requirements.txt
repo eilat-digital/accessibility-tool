@@ -10,3 +10,4 @@ gunicorn>=21.0.0
 anthropic>=0.40.0
 flask-cors>=4.0.0
 extract-msg>=0.48.0
+python-bidi

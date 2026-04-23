@@ -26,7 +26,7 @@ from collections import defaultdict
 from typing import Dict, List, Optional, Tuple
 
 import pikepdf
-from pikepdf import Array, Boolean, Dictionary, Name, String
+from pikepdf import Array, Dictionary, Name, String
 
 from .models import StructElement, HEADING_TYPES, TABLE_TYPES, LIST_TYPES
 
@@ -187,7 +187,7 @@ def _inject_mcids_into_page(
 
             # /P <<MCID n>> BDC
             new_instrs.append((
-                [Name("/P"), Dictionary(MCID=pikepdf.objects.Integer(mcid))],
+                [Name("/P"), Dictionary(MCID=int(mcid))],
                 pikepdf.Operator("BDC"),
             ))
             # BT ... ET
@@ -255,7 +255,7 @@ class _Builder:
         if title:
             d["/T"] = String(title)
         if mcid is not None and page_obj is not None:
-            d["/K"]  = pikepdf.objects.Integer(mcid)
+            d["/K"]  = int(mcid)
             d["/Pg"] = page_obj
         return self.pdf.make_indirect(d)
 
@@ -413,7 +413,7 @@ def _collect_mcid_owners(
             return
         if k is None:
             return
-        if isinstance(k, pikepdf.objects.Integer):
+        if isinstance(k, int):
             m = int(k)
             if m not in result:
                 result[m] = elem
@@ -421,7 +421,7 @@ def _collect_mcid_owners(
             for item in k:
                 try:
                     obj = item.get_object() if hasattr(item, "get_object") else item
-                    if isinstance(obj, pikepdf.objects.Integer):
+                    if isinstance(obj, int):
                         m = int(obj)
                         if m not in result:
                             result[m] = elem
@@ -451,11 +451,11 @@ def _set_common_metadata(
 ) -> None:
     pdf.Root["/Lang"] = String(lang)
     pdf.Root["/MarkInfo"] = pdf.make_indirect(
-        Dictionary(Marked=Boolean(True))
+        Dictionary(Marked=True)
     )
     pdf.Root["/ViewerPreferences"] = pdf.make_indirect(Dictionary(
         Direction=Name("/R2L"),
-        DisplayDocTitle=Boolean(True),
+        DisplayDocTitle=True,
     ))
     pdf.Root["/RoleMap"] = pdf.make_indirect(Dictionary())
 
@@ -538,17 +538,16 @@ def inject_digital(
     for pg_idx, page in enumerate(pages):
         pg_num   = pg_idx + 1
         page_obj = pdf.make_indirect(page.obj)
-        page_obj["/StructParents"] = pikepdf.objects.Integer(pg_idx)
 
         # --- Step 1: inject per-block MCIDs into content stream ----------
         mcid_texts = _inject_mcids_into_page(pdf, page_obj, mcid_start=0)
         n_mcids    = len(mcid_texts)
 
         # Fallback when content stream parsing fails:
-        # wrap entire page in one BDC so StructParents has a valid ParentTree entry.
+        # wrap entire page in one /P BDC so StructParents has a valid ParentTree entry.
         if not mcid_texts:
             try:
-                bdc = b"<<\n/MCID 0\n>> BDC\n"
+                bdc = b"/P <<\n/MCID 0\n>> BDC\n"
                 emc = b"\nEMC\n"
                 raw = page_obj.get("/Contents")
                 orig = b""
@@ -561,6 +560,11 @@ def inject_digital(
                 n_mcids    = 1
             except Exception:
                 pass
+
+        # Only wire StructParents when we have actual MCIDs — an orphaned
+        # StructParents with no ParentTree entry causes PAC hard-fails.
+        if n_mcids > 0:
+            page_obj["/StructParents"] = int(pg_idx)
 
         # --- Step 2: match leaf struct elems to MCIDs --------------------
         page_elems    = by_page.get(pg_num, [])
@@ -600,7 +604,7 @@ def inject_digital(
                 owner = mcid_owners.get(m)
                 # Fallback: point to sect so PAC doesn't find a null entry
                 parent_array.append(owner if owner is not None else sect)
-            pt_entries.append(pikepdf.objects.Integer(pg_idx))
+            pt_entries.append(int(pg_idx))
             pt_entries.append(Array(parent_array))
 
     if sect_refs:
@@ -610,7 +614,7 @@ def inject_digital(
     str_root["/ParentTree"]        = pdf.make_indirect(
         Dictionary(Nums=Array(pt_entries))
     )
-    str_root["/ParentTreeNextKey"] = pikepdf.objects.Integer(n_pages)
+    str_root["/ParentTreeNextKey"] = int(n_pages)
     pdf.Root["/StructTreeRoot"]    = str_root
 
 
@@ -652,7 +656,7 @@ def inject_scanned(
     for pg_idx, page in enumerate(pages):
         pg_num   = pg_idx + 1
         page_obj = pdf.make_indirect(page.obj)
-        page_obj["/StructParents"] = pikepdf.objects.Integer(pg_idx)
+        page_obj["/StructParents"] = int(pg_idx)
 
         elems_for_page = page_elements.get(pg_num, [])
         all_text = " ".join(e.text for e in elems_for_page if e.text)
@@ -672,7 +676,7 @@ def inject_scanned(
             page_obj=page_obj,
             mcid=fig_mcid,
         )
-        fig["/K"] = pikepdf.objects.Integer(fig_mcid)
+        fig["/K"] = int(fig_mcid)
         parent_tree_map[pg_idx] = [fig]
         sect_children.append(fig)
 
@@ -690,13 +694,13 @@ def inject_scanned(
 
     flat_nums: List = []
     for pg_idx_0 in sorted(parent_tree_map.keys()):
-        flat_nums.append(pikepdf.objects.Integer(pg_idx_0))
+        flat_nums.append(int(pg_idx_0))
         flat_nums.append(Array(parent_tree_map[pg_idx_0]))
 
     str_root["/ParentTree"] = pdf.make_indirect(Dictionary(
         Nums=Array(flat_nums)
     ))
-    str_root["/ParentTreeNextKey"] = pikepdf.objects.Integer(
+    str_root["/ParentTreeNextKey"] = int(
         max(parent_tree_map.keys()) + 1 if parent_tree_map else 0
     )
     str_root["/K"] = Array([doc_elem])
@@ -749,7 +753,6 @@ def inject_scanned_semantic(
     for pg_idx, page in enumerate(pages):
         pg_num = pg_idx + 1
         page_obj = pdf.make_indirect(page.obj)
-        page_obj["/StructParents"] = pikepdf.objects.Integer(pg_idx)
 
         page_elems   = by_page.get(pg_num, [])
         mcid_records = page_mcid_records.get(pg_num, [])
@@ -757,6 +760,11 @@ def inject_scanned_semantic(
         # (mcid, text) pairs for matching
         mcid_texts = [(rec[0], rec[1]) for rec in mcid_records]
         n_mcids    = (max(rec[0] for rec in mcid_records) + 1) if mcid_records else 0
+
+        # Only set StructParents when we have MCIDs — orphaned StructParents
+        # (no matching ParentTree entry) causes PAC hard-fails.
+        if n_mcids > 0:
+            page_obj["/StructParents"] = int(pg_idx)
 
         # Match leaf elements to MCIDs via text similarity
         leaf_mcid_map = _assign_mcids(page_elems, mcid_texts)
@@ -783,7 +791,7 @@ def inject_scanned_semantic(
             # Unmatched MCID → point to the page Sect (graceful fallback)
             pt_array.append(owner if owner is not None else sect)
 
-        parent_tree_nums.append(pikepdf.objects.Integer(pg_idx))
+        parent_tree_nums.append(int(pg_idx))
         parent_tree_nums.append(pdf.make_indirect(Array(pt_array)))
 
     doc_elem["/K"] = Array(sect_elems)
@@ -791,7 +799,7 @@ def inject_scanned_semantic(
     str_root["/ParentTree"] = pdf.make_indirect(Dictionary(
         Nums=Array(parent_tree_nums),
     ))
-    str_root["/ParentTreeNextKey"] = pikepdf.objects.Integer(len(pages))
+    str_root["/ParentTreeNextKey"] = int(len(pages))
     str_root["/K"] = Array([doc_elem])
     pdf.Root["/StructTreeRoot"] = str_root
 
@@ -817,7 +825,7 @@ def build_bookmarks(
             items.append(pdf.make_indirect(Dictionary(
                 Title=String(elem.text[:80] if elem.text else f"עמוד {pg}"),
                 Dest=_dest(pg),
-                Count=pikepdf.objects.Integer(0),
+                Count=int(0),
             )))
     else:
         for i, _ in enumerate(pages, 1):
@@ -826,7 +834,7 @@ def build_bookmarks(
             items.append(pdf.make_indirect(Dictionary(
                 Title=String(label),
                 Dest=_dest(i),
-                Count=pikepdf.objects.Integer(0),
+                Count=int(0),
             )))
 
     if not items:
@@ -834,7 +842,7 @@ def build_bookmarks(
 
     outline_root = pdf.make_indirect(Dictionary(
         Type=Name("/Outlines"),
-        Count=pikepdf.objects.Integer(len(items)),
+        Count=int(len(items)),
     ))
     for i, item in enumerate(items):
         item["/Parent"] = outline_root
