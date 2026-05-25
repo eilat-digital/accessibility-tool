@@ -1118,13 +1118,13 @@ function renderElem(container, elem, path, depth) {
     // Group element label
     const lbl = document.createElement('span');
     lbl.style.cssText = 'color:var(--gray-3);font-size:11px;padding:2px 4px;flex:1';
-    lbl.textContent = elem.children ? `(${elem.children.length} ילדים)` : '';
+    lbl.textContent = elem.children ? `[${elem.children.length} משנה]` : '';
     row.appendChild(lbl);
   }
 
-  // Delete button
+  // Delete button — using text "הסר" to avoid confusion with PDF content
   const del = document.createElement('button');
-  del.textContent = '×';
+  del.textContent = '🗑';
   del.title = 'הסר אלמנט';
   del.style.cssText = 'border:none;background:none;color:var(--gray-3);cursor:pointer;font-size:16px;padding:0 4px;flex-shrink:0;line-height:1';
   del.addEventListener('click', () => removeElem(path));

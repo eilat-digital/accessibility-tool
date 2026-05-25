@@ -154,30 +154,86 @@ def _preprocess_for_ocr(img):
 # RTL mark (U+200F) and LTR mark (U+200E) Tesseract artifacts
 _RTL_MARK = "‏"
 _LTR_MARK = "‎"
-# Pattern: (number ילדים) — Tesseract footnote artifact with heb+eng
+
+# ── OCR artifact patterns ──────────────────────────────────────────────────
+# (N ילדים) — Tesseract footnote number artifact (heb+eng confusion)
 _FOOTNOTE_ARTIFACT = re.compile(r"\(\s*\d+\s+ילדים\s*\)")
-# Pattern: isolated Latin word followed by RTL mark (Tesseract misread Hebrew as Latin)
-_LATIN_RTL = re.compile(r"\b[A-Z]{2,}\s*" + _RTL_MARK)
-# Short all-caps Latin "word" at end of mixed Hebrew line (e.g. "NON‏", "WIN‏")
-_LATIN_ARTIFACT = re.compile(r"(?<!\w)[A-Z]{2,6}‏")
+# WORD‏ — all-caps Latin token + RTL mark (Hebrew letters misread as Latin)
+_LATIN_ARTIFACT = re.compile(r"(?<!\w)[A-Z]{2,8}‏")
+# Standalone all-caps Latin word inside otherwise Hebrew line (heb+eng residue)
+# Matches 2-8 capital letters surrounded by spaces/line-boundaries in Hebrew text
+_LATIN_IN_HEBREW = re.compile(
+    r"(?<=[^\x00-\x7F\s])\s+[A-Z]{2,8}(?:\s|$)|(?:^|\s)[A-Z]{2,8}\s+(?=[^\x00-\x7F])"
+)
+# Hebrew gershayim: double-yod between Hebrew letters → ״ (U+05F4)
+# e.g. מייר→מ"ר, תשנייג→תשנ"ג, צהייל→צה"ל, עוייד→עו"ד
+_DOUBLE_YOD = re.compile(r"([א-ת])יי([א-ת\s]|$)")
+# Triple-yod (e.g. "עפייי" → "עפ"י"): consonant + ייי
+_TRIPLE_YOD = re.compile(r"([א-ת])ייי([א-ת\s]|$)")
+# Latin double-apostrophe → Hebrew gershayim ״
+_LATIN_QUOTES = re.compile(r"''|\"\"")
+# Latin single apostrophe inside Hebrew word → Hebrew geresh ׳
+_LATIN_GERESH = re.compile(r"([א-ת])'([א-ת])")
+# Number or code stuck to Hebrew text without space (e.g. "123מ"ר" or "סוג314")
+_NUM_STUCK = re.compile(r"(\d)([א-ת])")
+_HEB_STUCK = re.compile(r"([א-ת])(\d)")
+# m"r (meter) common misspelling with Tesseract
+_METER_SQ = re.compile(r'מ["״]ר', re.UNICODE)
+
+
+def _fix_hebrew_gershayim(text: str) -> str:
+    """
+    Restore Hebrew gershayim (״) and geresh (׳) that Tesseract reads as
+    double/single Latin apostrophes or double-yod sequences.
+
+    Handles:
+      מייר   → מ"ר    (double-yod between consonants)
+      תשנייג → תשנ"ג
+      צהייל  → צה"ל
+      עוייד  → עו"ד
+      עפייי  → עפ"י   (triple-yod)
+      ''     → ״      (Latin double-apostrophe → gershayim)
+      word'  → word׳  (Latin apostrophe after Hebrew → geresh)
+    """
+    # Triple-yod first (more specific), then double-yod
+    text = _TRIPLE_YOD.sub(lambda m: m.group(1) + '״' + 'י' + m.group(2), text)
+    text = _DOUBLE_YOD.sub(lambda m: m.group(1) + '״' + m.group(2), text)
+    # Latin double-apostrophe → ״
+    text = text.replace("''", "״")
+    # Latin single apostrophe after Hebrew consonant → ׳
+    text = _LATIN_GERESH.sub(lambda m: m.group(1) + '׳' + m.group(2), text)
+    return text
 
 
 def _clean_ocr_text(text: str) -> str:
     """
-    Remove common Tesseract heb+eng artifacts from OCR output:
-    1. (N ילדים) — footnote number misread as "N children"
-    2. WORD‏  — Hebrew letters misidentified as Latin capital letters
-    3. Stray RTL/LTR Unicode marks
+    Post-OCR cleanup for Hebrew government documents scanned with Tesseract.
+
+    Fixes:
+    1. (N ילדים)    — footnote number misread as "N children"
+    2. WORD‏   — Latin-caps + RTL-mark (Hebrew letters misread as Latin)
+    3. All-caps Latin tokens inside Hebrew lines (heb+eng residue)
+    4. Stray U+200F / U+200E direction marks
+    5. Double/triple-yod sequences → Hebrew gershayim ״ / geresh ׳
+    6. Latin '' / ' inside Hebrew → ״ / ׳
+    7. Numbers stuck directly to Hebrew letters (missing space)
     """
     if not text:
         return text
-    # Remove "(1 ילדים)", "(2 ילדים)" etc.
+    # 1. Footnote artifacts
     text = _FOOTNOTE_ARTIFACT.sub("", text)
-    # Remove LATIN_WORD + RTL_MARK artifacts (e.g. "NON‏", "WIN‏", "ANY‏")
+    # 2. Latin-cap + RTL-mark artifacts
     text = _LATIN_ARTIFACT.sub("", text)
-    # Remove stray RTL/LTR marks
+    # 3. Isolated all-caps Latin tokens inside Hebrew text
+    text = _LATIN_IN_HEBREW.sub(" ", text)
+    # 4. Stray direction marks
     text = text.replace(_RTL_MARK, "").replace(_LTR_MARK, "")
-    # Collapse multiple spaces/blank lines created by removals
+    # 5 & 6. Gershayim / geresh restoration
+    text = _fix_hebrew_gershayim(text)
+    # 7. Separate numbers from Hebrew letters
+    text = _NUM_STUCK.sub(r"\1 \2", text)
+    text = _HEB_STUCK.sub(r"\1 \2", text)
+    # Collapse multiple spaces/blank lines
     text = re.sub(r"[ \t]{2,}", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
