@@ -63,6 +63,43 @@ def sort_reading_order(blocks: List[TextBlock]) -> List[TextBlock]:
 
 
 # ---------------------------------------------------------------------------
+# Arnona (municipal tax) table detection patterns
+# ---------------------------------------------------------------------------
+
+# A line qualifies as an arnona data row when it contains:
+#   Hebrew description text  +  3-6 digit code (possibly "140,160")  +  decimal price
+_ARNONA_ROW_RE = re.compile(
+    r"[א-ת]"          # at least one Hebrew letter
+    r".{0,80}"                  # description (up to 80 chars)
+    r"\s+(\d{3,6}(?:,\d{3,6})?)"   # code: 3-6 digits, e.g. "314" or "140,160"
+    r"\s+(\d{1,5}(?:\.\d{1,4})?)"  # price: integer or decimal e.g. "38.64"
+    r"\s*$",
+    re.UNICODE,
+)
+
+# Section/chapter heading that precedes an arnona table (becomes Caption)
+# e.g. "1.1 מבני מגורים", "2 משרדים, שירותים ומסחר"
+_ARNONA_CAPTION_RE = re.compile(
+    r"^[\d\.]+\s+[א-ת]",
+    re.UNICODE,
+)
+
+# Column header row keywords
+_ARNONA_HEADER_KEYWORDS = {"סוג", "קוד", "תעריף", "בש", "שנתית", "למ"}
+
+
+def _is_arnona_row(text: str) -> bool:
+    """Return True if text matches the arnona rate-table row pattern."""
+    return bool(_ARNONA_ROW_RE.search(text))
+
+
+def _is_arnona_header_row(text: str) -> bool:
+    """Return True if text looks like a table column-header row (not data)."""
+    words = set(re.findall(r"[א-ת]{2,}", text))
+    return bool(words & _ARNONA_HEADER_KEYWORDS) and not _ARNONA_ROW_RE.search(text)
+
+
+# ---------------------------------------------------------------------------
 # List pattern matching
 # ---------------------------------------------------------------------------
 
@@ -406,6 +443,113 @@ class TableDetector:
 # StructureDetector — orchestrator
 # ---------------------------------------------------------------------------
 
+class ArnonaTableDetector:
+    """
+    Specialized detector for municipal property-tax rate tables (טבלאות ארנונה).
+
+    These tables appear in scanned arnona regulation PDFs and have the pattern:
+        [Hebrew description]  [3-6 digit code]  [decimal price per m²]
+
+    The detector:
+    1. Scans OCR text blocks line by line for the arnona row pattern.
+    2. Groups consecutive matching rows (≥3) into table candidates.
+    3. Looks backward (up to 3 blocks) for a chapter heading → Caption.
+    4. Looks forward/at first row for column headers → TH row.
+
+    Returns same dict format as TableDetector / BorderTableDetector so that
+    _build_table_elem() can process them uniformly.
+    """
+
+    MIN_DATA_ROWS = 3   # minimum data rows to constitute a table
+
+    def detect(self, blocks: List[TextBlock]) -> Tuple[List[dict], Set[int]]:
+        """
+        Returns:
+          tables      — list of table dicts with source="arnona"
+          claimed_ids — set of id(TextBlock) absorbed into tables
+        """
+        tables: List[dict] = []
+        claimed: Set[int] = set()
+
+        by_page: Dict[int, List[TextBlock]] = defaultdict(list)
+        for b in blocks:
+            by_page[b.page_num].append(b)
+
+        for page_num in sorted(by_page.keys()):
+            page_blocks = sorted(by_page[page_num], key=lambda b: (b.y, -b.x))
+            i = 0
+            while i < len(page_blocks):
+                block = page_blocks[i]
+                text  = block.text.strip()
+
+                # Potential arnona data row?
+                if not _is_arnona_row(text):
+                    i += 1
+                    continue
+
+                # Accumulate consecutive data rows
+                run: List[TextBlock] = [block]
+                j = i + 1
+                while j < len(page_blocks):
+                    nxt = page_blocks[j]
+                    nt  = nxt.text.strip()
+                    if _is_arnona_row(nt):
+                        run.append(nxt)
+                        j += 1
+                    elif not nt:
+                        j += 1   # skip blank lines within run
+                    else:
+                        break
+
+                if len(run) < self.MIN_DATA_ROWS:
+                    i += 1
+                    continue
+
+                # Look backward for caption heading (up to 3 preceding blocks)
+                caption_block: Optional[TextBlock] = None
+                header_block:  Optional[TextBlock] = None
+                look = i - 1
+                checked = 0
+                while look >= 0 and checked < 4:
+                    prev = page_blocks[look]
+                    pt   = prev.text.strip()
+                    if not pt:
+                        look -= 1
+                        checked += 1
+                        continue
+                    if _is_arnona_header_row(pt):
+                        header_block = prev
+                        look -= 1
+                        checked += 1
+                        continue
+                    if _ARNONA_CAPTION_RE.match(pt) and len(pt) < 80:
+                        caption_block = prev
+                    break
+
+                tables.append({
+                    "source":        "arnona",
+                    "page_num":      page_num,
+                    "data_rows":     run,
+                    "caption_block": caption_block,
+                    "header_block":  header_block,
+                    "all_blocks":    (
+                        ([caption_block] if caption_block else []) +
+                        ([header_block]  if header_block  else []) +
+                        run
+                    ),
+                })
+                for b in run:
+                    claimed.add(id(b))
+                if header_block:
+                    claimed.add(id(header_block))
+                # Note: caption_block is NOT claimed from free text — it becomes
+                # the Caption child inside the Table instead.
+
+                i = j
+
+        return tables, claimed
+
+
 class BorderTableDetector:
     """
     Detects tables in born-digital PDFs using graphic line borders.
@@ -596,7 +740,15 @@ class StructureDetector:
             raw_tables.extend(border_tables)
             claimed_ids |= border_claimed
 
-        # 1b. Column-alignment table detection on remaining blocks
+        # 1b. Arnona rate-table detection (OCR pattern-based, runs before generic align)
+        free_after_border = [b for b in blocks if id(b) not in claimed_ids]
+        if free_after_border:
+            adt = ArnonaTableDetector()
+            arnona_tables, arnona_claimed = adt.detect(free_after_border)
+            raw_tables.extend(arnona_tables)
+            claimed_ids |= arnona_claimed
+
+        # 1c. Column-alignment table detection on remaining blocks
         free_after_border = [b for b in blocks if id(b) not in claimed_ids]
         if free_after_border:
             td = TableDetector()
@@ -604,7 +756,7 @@ class StructureDetector:
             raw_tables.extend(align_tables)
             claimed_ids |= align_claimed
 
-        # 1c. Repeated key/value rows promote to semantic tables before P fallback.
+        # 1d. Repeated key/value rows promote to semantic tables before P fallback.
         free_after_tables = [b for b in blocks if id(b) not in claimed_ids]
         kv_tables, kv_claimed = self._detect_key_value_groups(free_after_tables)
         raw_tables.extend(kv_tables)
@@ -1076,6 +1228,65 @@ class StructureDetector:
     def _build_table_elem(self, table_data: dict) -> StructElement:
         table  = StructElement("Table", page_num=table_data["page_num"])
         source = table_data.get("source", "align")
+
+        # ── Arnona rate-table ───────────────────────────────────────────────
+        if source == "arnona":
+            pg = table_data["page_num"]
+
+            # Caption from preceding chapter heading
+            cap_block = table_data.get("caption_block")
+            if cap_block:
+                cap = StructElement("Caption", text=cap_block.text.strip(),
+                                    page_num=pg, source_bbox=cap_block.bbox)
+                table.add(cap)
+
+            # TH header row — either from an explicit header block or synthetic
+            hdr_block = table_data.get("header_block")
+            if hdr_block:
+                tr_h = StructElement("TR", page_num=pg)
+                # Parse the header row into column cells
+                hdr_text = hdr_block.text.strip()
+                # Synthetic column names for known arnona structure
+                for col_name in ["סוג נכס", "קוד", "תעריף שנתי 2021 בש\"ח למ\"ר"]:
+                    th = StructElement("TH", text=col_name, page_num=pg)
+                    th.attrs["Scope"] = "Col"
+                    tr_h.add(th)
+                table.add(tr_h)
+            else:
+                # Always emit synthetic header so table has TH
+                tr_h = StructElement("TR", page_num=pg)
+                for col_name in ["סוג נכס", "קוד", "תעריף שנתי 2021 בש\"ח למ\"ר"]:
+                    th = StructElement("TH", text=col_name, page_num=pg)
+                    th.attrs["Scope"] = "Col"
+                    tr_h.add(th)
+                table.add(tr_h)
+
+            # Data rows
+            for row_block in table_data["data_rows"]:
+                row_text = row_block.text.strip()
+                # Parse: try to split into description, code, price
+                # Pattern: description ... code price
+                m = _ARNONA_ROW_RE.search(row_text)
+                if m:
+                    code  = m.group(1)
+                    price = m.group(2)
+                    # Description = everything before the code
+                    desc = row_text[:m.start(1)].strip()
+                else:
+                    # Fallback: entire text as single TD
+                    desc, code, price = row_text, "", ""
+
+                tr = StructElement("TR", page_num=pg, source_bbox=row_block.bbox)
+                td_desc  = StructElement("TD", text=desc,  page_num=pg,
+                                         source_bbox=row_block.bbox)
+                td_code  = StructElement("TD", text=code,  page_num=pg)
+                td_price = StructElement("TD", text=price, page_num=pg)
+                tr.add(td_desc)
+                tr.add(td_code)
+                tr.add(td_price)
+                table.add(tr)
+
+            return table
 
         if source == "keyvalue" and "rows_raw" in table_data:
             for block, label, value in table_data["rows_raw"]:
