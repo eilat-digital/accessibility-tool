@@ -164,11 +164,56 @@ def extract_blocks(pdf_path: str) -> List[TextBlock]:
     return sort_layout_blocks(blocks)
 
 
+def _has_tounicode_gaps(pdf_path: str) -> bool:
+    """
+    Return True if the PDF contains fonts that lack ToUnicode maps.
+    Such fonts cause Acrobat's "Character encoding" check to fail even when
+    pdfminer can extract some readable text (partial ToUnicode coverage).
+    We detect this by checking whether any font resource lacks /ToUnicode.
+    """
+    try:
+        import pikepdf
+        with pikepdf.open(pdf_path) as pdf:
+            for page in pdf.pages:
+                resources = page.obj.get("/Resources")
+                if not resources:
+                    continue
+                fonts = resources.get("/Font")
+                if not fonts:
+                    continue
+                for _fname, font_ref in fonts.items():
+                    try:
+                        font = font_ref.get_object() if hasattr(font_ref, "get_object") else font_ref
+                        if not isinstance(font, pikepdf.Dictionary):
+                            continue
+                        subtype = str(font.get("/Subtype", ""))
+                        # Only composite (Type0) and Type1/TrueType fonts matter
+                        if subtype not in ("/Type1", "/TrueType", "/Type0", "/CIDFontType2", "/CIDFontType0"):
+                            continue
+                        if "/ToUnicode" not in font:
+                            # Type0 fonts: check DescendantFonts
+                            if subtype == "/Type0":
+                                desc = font.get("/DescendantFonts")
+                                if desc:
+                                    for df in desc:
+                                        df_obj = df.get_object() if hasattr(df, "get_object") else df
+                                        if isinstance(df_obj, pikepdf.Dictionary) and "/ToUnicode" not in df_obj:
+                                            return True
+                            else:
+                                return True
+                    except Exception:
+                        continue
+    except Exception:
+        pass
+    return False
+
+
 def has_text(pdf_path: str, min_chars: int = 50) -> bool:
     """
     Quick check: does this PDF contain selectable Unicode text?
-    Returns False for PDFs where most text is CID-encoded (no ToUnicode map),
-    so they fall through to the OCR path.
+    Returns False for PDFs where most text is CID-encoded (no ToUnicode map)
+    or where fonts lack ToUnicode coverage, so they fall through to the OCR path.
+    Acrobat's "Character encoding" check fails on fonts without ToUnicode maps.
     """
     if not _PDFMINER_OK:
         return False
@@ -182,7 +227,13 @@ def has_text(pdf_path: str, min_chars: int = 50) -> bool:
         if _cid_ratio(text) > 0.3:
             return False
         cleaned = _clean_cid(text)
-        return len(cleaned) >= min_chars
+        if len(cleaned) < min_chars:
+            return False
+        # If any font lacks a ToUnicode map, route to OCR so Acrobat's
+        # "Character encoding" check passes on the output PDF.
+        if _has_tounicode_gaps(pdf_path):
+            return False
+        return True
     except Exception:
         return False
 

@@ -635,7 +635,12 @@ def apply_stamp_to_pdf(pdf_path, note_text=None):
                     res = page.obj["/Resources"]
                     if "/XObject" not in res: res["/XObject"] = pdf.make_indirect(Dictionary())
                     res["/XObject"]["/AccessNote"] = note_xobj
-                    stream_data += (f"q\n{note_img_w_pts:.3f} 0 0 {note_img_h_pts:.3f} {nx:.3f} {ny:.3f} cm\n/AccessNote Do\nQ\n").encode()
+                    note_bbox = f"[{nx:.3f} {ny:.3f} {nx+note_img_w_pts:.3f} {ny+note_img_h_pts:.3f}]"
+                    stream_data += (
+                        f"/Artifact <</Type /Layout /Attached [/Bottom /Right] /BBox {note_bbox}>> BDC\n"
+                        f"q\n{note_img_w_pts:.3f} 0 0 {note_img_h_pts:.3f} {nx:.3f} {ny:.3f} cm\n/AccessNote Do\nQ\n"
+                        f"EMC\n"
+                    ).encode()
                 s = pdf.make_indirect(PdfStream(pdf, stream_data))
                 existing = page.obj.get("/Contents")
                 if existing is None: page.obj["/Contents"] = s

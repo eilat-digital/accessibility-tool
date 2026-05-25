@@ -224,7 +224,22 @@ def _inject_mcids_into_page(
             i += 1
 
         else:
-            artifact_buf.append(instrs[i])
+            # Flush any pending artifact buffer before handling a standalone Do
+            # (image XObject) so that each image gets its own Artifact wrapper.
+            # Acrobat's "Other elements alternate text" check can fail when image
+            # XObjects are lumped together with other graphics in one Artifact block.
+            op_name = str(instrs[i][1]) if len(instrs[i]) > 1 else ""
+            if op_name == "Do":
+                _flush_artifact()
+                # Wrap the single image Do in its own /Artifact /Background block
+                new_instrs.append((
+                    [Name("/Artifact"), Dictionary(Type=Name("/Background"))],
+                    pikepdf.Operator("BDC"),
+                ))
+                new_instrs.append(instrs[i])
+                new_instrs.append(([], pikepdf.Operator("EMC")))
+            else:
+                artifact_buf.append(instrs[i])
             i += 1
 
     _flush_artifact()
