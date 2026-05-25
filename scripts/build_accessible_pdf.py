@@ -125,6 +125,64 @@ def extract_pages(input_pdf, pages_dir, dpi=200, batch_size=20):
     return paths
 
 
+def _preprocess_for_ocr(img):
+    """
+    Preprocess a PIL image before Tesseract OCR:
+    - Convert to grayscale
+    - Apply adaptive contrast (CLAHE-style via PIL)
+    - Sharpen slightly
+    This improves OCR accuracy on scanned government documents with
+    grey/uneven backgrounds, and helps achieve the WCAG 4.5:1 contrast
+    ratio requirement in the accessibility check.
+    """
+    try:
+        from PIL import ImageFilter, ImageOps, ImageEnhance
+        # Grayscale
+        if img.mode != "L":
+            img = img.convert("L")
+        # Auto-contrast — stretches histogram to full 0–255 range
+        img = ImageOps.autocontrast(img, cutoff=1)
+        # Mild sharpening
+        img = img.filter(ImageFilter.SHARPEN)
+        # Convert back to RGB for Tesseract (some versions require it)
+        img = img.convert("RGB")
+    except Exception:
+        pass
+    return img
+
+
+# RTL mark (U+200F) and LTR mark (U+200E) Tesseract artifacts
+_RTL_MARK = "‏"
+_LTR_MARK = "‎"
+# Pattern: (number ילדים) — Tesseract footnote artifact with heb+eng
+_FOOTNOTE_ARTIFACT = re.compile(r"\(\s*\d+\s+ילדים\s*\)")
+# Pattern: isolated Latin word followed by RTL mark (Tesseract misread Hebrew as Latin)
+_LATIN_RTL = re.compile(r"\b[A-Z]{2,}\s*" + _RTL_MARK)
+# Short all-caps Latin "word" at end of mixed Hebrew line (e.g. "NON‏", "WIN‏")
+_LATIN_ARTIFACT = re.compile(r"(?<!\w)[A-Z]{2,6}‏")
+
+
+def _clean_ocr_text(text: str) -> str:
+    """
+    Remove common Tesseract heb+eng artifacts from OCR output:
+    1. (N ילדים) — footnote number misread as "N children"
+    2. WORD‏  — Hebrew letters misidentified as Latin capital letters
+    3. Stray RTL/LTR Unicode marks
+    """
+    if not text:
+        return text
+    # Remove "(1 ילדים)", "(2 ילדים)" etc.
+    text = _FOOTNOTE_ARTIFACT.sub("", text)
+    # Remove LATIN_WORD + RTL_MARK artifacts (e.g. "NON‏", "WIN‏", "ANY‏")
+    text = _LATIN_ARTIFACT.sub("", text)
+    # Remove stray RTL/LTR marks
+    text = text.replace(_RTL_MARK, "").replace(_LTR_MARK, "")
+    # Collapse multiple spaces/blank lines created by removals
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
 def run_ocr(page_paths, lang_code="he-IL"):
     try:
         import pytesseract
@@ -143,21 +201,21 @@ def run_ocr(page_paths, lang_code="he-IL"):
         print("  OCR: Tesseract לא נמצא — ללא שכבת טקסט (WCAG 1.4.5 יכשל)")
         return {}
 
-    lang_map = {"he-IL": "heb+eng", "he": "heb+eng", "ar": "ara+heb", "en-US": "eng", "en": "eng"}
-    tess = lang_map.get(lang_code, "heb+eng")
+    lang_map = {"he-IL": "heb", "he": "heb", "ar": "ara+heb", "en-US": "eng", "en": "eng"}
+    tess = lang_map.get(lang_code, "heb")
     texts = {}
     print(f"  OCR: מריץ Tesseract ({tess}) על {len(page_paths)} עמודים...")
     for i, path in enumerate(page_paths, 1):
         try:
-            img = Image.open(path)
+            img = _preprocess_for_ocr(Image.open(path))
             custom_config = r'--oem 3 --psm 6 -c preserve_interword_spaces=1'
-            raw = pytesseract.image_to_string(img, lang='heb+eng', config=custom_config)
+            raw = pytesseract.image_to_string(img, lang=tess, config=custom_config)
             if raw and not any('א' <= c <= 'ת' for c in raw):
                 try:
                     raw = raw.encode('latin-1').decode('utf-8')
                 except (UnicodeDecodeError, UnicodeEncodeError):
                     pass
-            texts[i] = raw
+            texts[i] = _clean_ocr_text(raw)
         except Exception as e:
             print(f"  OCR עמוד {i}: {e}")
             texts[i] = ""
@@ -257,9 +315,9 @@ def run_ocr_with_positions(page_paths, lang_code="he-IL"):
     except ImportError:
         _TB = None
 
-    lang_map = {"he-IL": "heb+eng", "he": "heb+eng",
+    lang_map = {"he-IL": "heb", "he": "heb",
                 "ar": "ara+heb", "en-US": "eng", "en": "eng"}
-    tess = lang_map.get(lang_code, "heb+eng")
+    tess = lang_map.get(lang_code, "heb")
 
     page_texts: dict = {}
     page_blocks: dict = {}
@@ -269,7 +327,7 @@ def run_ocr_with_positions(page_paths, lang_code="he-IL"):
     for i, path in enumerate(page_paths, 1):
         try:
             from PIL import Image
-            img   = Image.open(path)
+            img   = _preprocess_for_ocr(Image.open(path))
             iw, ih = img.size
             dpi_info = img.info.get("dpi", (200, 200))
             dpi_x    = dpi_info[0] if dpi_info[0] > 0 else 200
@@ -318,7 +376,9 @@ def run_ocr_with_positions(page_paths, lang_code="he-IL"):
             text_parts = []
             for key in sorted(lines.keys()):
                 ln  = lines[key]
-                txt = " ".join(ln["words"])
+                txt = _clean_ocr_text(" ".join(ln["words"]))
+                if not txt:
+                    continue
                 text_parts.append(txt)
 
                 x = ln["px_l"] * pts_per_px

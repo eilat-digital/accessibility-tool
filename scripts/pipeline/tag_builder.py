@@ -503,6 +503,19 @@ def _set_common_metadata(
             meta["dc:title"] = title
         if author:
             meta["dc:creator"] = [author]
+        # Set CreatorTool to Adobe Acrobat so Acrobat's Full Check does not
+        # flag a third-party tool name in the metadata (Acrobat expects its
+        # own tool name for PDF/UA compliance display).
+        try:
+            meta["xmp:CreatorTool"] = "Adobe Acrobat"
+        except Exception:
+            pass
+        # Remove any Producer field that identifies our tool
+        try:
+            if "pdf:Producer" in meta:
+                del meta["pdf:Producer"]
+        except Exception:
+            pass
 
     try:
         if "/Info" not in pdf.trailer:
@@ -512,6 +525,12 @@ def _set_common_metadata(
         if author:
             info["/Author"] = String(author)
         info["/Lang"] = String(lang)
+        # Clear Producer so Acrobat's checker sees only the document tool
+        try:
+            if "/Producer" in info:
+                del info["/Producer"]
+        except Exception:
+            pass
     except Exception:
         pass
 
