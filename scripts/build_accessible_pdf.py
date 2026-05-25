@@ -47,6 +47,11 @@ OCR_GIBBERISH_RATIO_THRESHOLD = 0.35
 OCR_MIN_AVG_CHARS_PER_PAGE = 24
 
 FONT_CANDIDATES = [
+    # Windows — עברית מובטחת
+    "C:/Windows/Fonts/arial.ttf",
+    "C:/Windows/Fonts/GFRANK.TTF",
+    "C:/Windows/Fonts/FRANKB.TTF",
+    # Linux
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
     "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
@@ -152,7 +157,7 @@ def run_ocr(page_paths, lang_code="he-IL"):
                     raw = raw.encode('latin-1').decode('utf-8')
                 except (UnicodeDecodeError, UnicodeEncodeError):
                     pass
-            texts[i] = get_display(raw)
+            texts[i] = raw
         except Exception as e:
             print(f"  OCR עמוד {i}: {e}")
             texts[i] = ""
@@ -162,9 +167,15 @@ def run_ocr(page_paths, lang_code="he-IL"):
 
 
 def _pdf_escape_text(text: str) -> bytes:
-    """Encode text as Latin-1 PDF string literal (for invisible text layer)."""
-    safe = text.encode("latin-1", errors="replace")
-    return safe.replace(b"\\", b"\\\\").replace(b"(", b"\\(").replace(b")", b"\\)")
+    """Encode text as UTF-16 BE PDF hex string (supports Hebrew/Arabic/Unicode)."""
+    utf16 = b'\xfe\xff' + text.encode('utf-16-be')
+    return b'<' + utf16.hex().upper().encode() + b'>'
+
+
+def _pdf_actual_text(text: str) -> bytes:
+    """Encode ActualText as UTF-16 BE PDF hex string for marked content."""
+    utf16 = b'\xfe\xff' + text.encode('utf-16-be')
+    return b'<' + utf16.hex().upper().encode() + b'>'
 
 
 def _ocr_bad_char_ratio(text: str) -> float:
@@ -382,15 +393,15 @@ def build_image_pdf_with_mcids(page_paths, page_blocks_dict, output_path, stamp=
                 pdf_y = ph - blk.y - blk.height
                 fs    = max(blk.height * 0.75, 6.0)
 
-                # Latin-1 safe text for the invisible layer; ActualText carries Hebrew
-                safe = _pdf_escape_text(blk.text)
+                # UTF-16 BE text; ActualText ensures Hebrew/Arabic is readable by screen readers
+                actual = _pdf_actual_text(blk.text)
 
-                cs_text_parts.append(f"/P <</MCID {mcid}>> BDC\n".encode())
+                cs_text_parts.append(b"/P <</MCID " + str(mcid).encode() + b" /ActualText " + actual + b">> BDC\n")
                 cs_text_parts.append(b"BT\n")
                 cs_text_parts.append(f"/F1 {fs:.1f} Tf\n".encode())
                 cs_text_parts.append(b"3 Tr\n")   # invisible render mode
                 cs_text_parts.append(f"{blk.x:.2f} {max(pdf_y, 1.0):.2f} Td\n".encode())
-                cs_text_parts.append(b"(" + safe + b") Tj\n")
+                cs_text_parts.append(actual + b" Tj\n")
                 cs_text_parts.append(b"ET\n")
                 cs_text_parts.append(b"EMC\n")
 
@@ -1021,7 +1032,8 @@ def add_metadata_only(input_pdf, output_pdf, lang="he-IL", title="מסמך נג�
 
 def process_digital_pdf(input_pdf, output_pdf, lang="he-IL",
                          title="מסמך נגיש", author="",
-                         ai_descriptions=None, page_structures=None):
+                         ai_descriptions=None, page_structures=None,
+                         structure_json_path=None):
     """
     Full pipeline for born-digital PDFs (text already in content streams).
 
@@ -1091,6 +1103,19 @@ def process_digital_pdf(input_pdf, output_pdf, lang="he-IL",
     if page_structures:
         elements = merge_ai_structure(elements, page_structures, lang=lang)
         print(f"  לאחר מיזוג AI: {len(elements)} אלמנטים")
+
+    # הוספת הבהרת נגישות בראש המסמך (IS 5568 / מסמכים רשמיים)
+    elements = _prepend_accessibility_notice(elements, title)
+
+    # שמירת מבנה ל-JSON אם נדרש (לשימוש modal בממשק)
+    if structure_json_path and elements:
+        try:
+            with open(structure_json_path, "w", encoding="utf-8") as _sf:
+                json.dump([_elem_to_dict(e) for e in elements], _sf,
+                          ensure_ascii=False, indent=2)
+            print(f"  מבנה נשמר: {structure_json_path} ({len(elements)} אלמנטים)")
+        except Exception as _je:
+            print(f"  [!] שגיאה בשמירת מבנה JSON: {_je}")
 
     # ── Pre-export semantic gate (hard-fail layer) ────────────────────────
     gate_ok, gate_msg, gate_status = validate_structure_gate(
@@ -1193,10 +1218,7 @@ def _add_metadata_only_impl(input_pdf, output_pdf, lang, title, author):
             pdf.trailer["/Info"]["/Author"] = String(author)
     except Exception:
         pass
-    if "/MarkInfo" not in pdf.Root:
-        pdf.Root["/MarkInfo"] = pdf.make_indirect(
-            Dictionary(Marked=True)
-        )
+    pdf.Root["/MarkInfo"] = Dictionary(Marked=True)
     for page in pdf.pages:
         page.obj["/Tabs"] = Name("/S")
     pdf.save(output_pdf)
@@ -1245,20 +1267,15 @@ def add_pdfua_tags(input_pdf, output_pdf, lang="he-IL", title="\u05de\u05e1\u05d
     try:
         if "/Info" not in pdf.trailer:
             pdf.trailer["/Info"] = pdf.make_indirect(Dictionary())
-        pdf.trailer["/Info"]["/Title"] = String(title)
+        pdf.trailer["/Info"]["/Title"] = String(title or "מסמך נגיש")
         if author:
             pdf.trailer["/Info"]["/Author"] = String(author)
     except Exception:
         pass
 
-    pdf.Root["/MarkInfo"] = pdf.make_indirect(
-        Dictionary(Marked=True)
-    )
-
-    # RoleMap: only needed for non-standard custom types.
-    # H, H1-H6, Sect, Figure, P, Table, TR, TH, TD are all PDF standard types —
-    # including them in RoleMap confuses PAC and causes 1.3 failures.
-    pdf.Root["/RoleMap"] = pdf.make_indirect(Dictionary())
+    pdf.Root["/MarkInfo"] = Dictionary(Marked=True)
+    pdf.Root["/ViewerPreferences"] = Dictionary(Direction=Name("/R2L"), DisplayDocTitle=True)
+    pdf.Root["/RoleMap"] = Dictionary()
 
     parent_tree_map = {}
     # MCIDs per page (reset per page — PDF spec §14.7.4.4):
@@ -1586,8 +1603,58 @@ def _report(errors, warnings):
     print('='*60)
 
 
+_ACCESSIBILITY_NOTICE = (
+    "נוסח נגיש למטרת נגישות בלבד. "
+    "הנוסח המחייב הוא המקור הסרוק והחתום המצורף."
+)
+
+_LANG_DIRECTION_NOTE = (
+    "מסמך זה מוגדר בשפה עברית, כיוון קריאה מימין לשמאל (RTL)."
+)
+
+
+def _prepend_accessibility_notice(elements, title: str = "") -> list:
+    """
+    מוסיף הבהרת נגישות סטנדרטית בראש רשימת האלמנטים.
+    נדרש ע"פ IS 5568 ומדיניות עיריית אילת למסמכים רשמיים.
+    """
+    from pipeline.models import StructElement  # noqa: F401 — already imported above
+
+    notice_sect = StructElement("Sect", page_num=0)
+
+    if title and title.strip():
+        h1 = StructElement("H1", text=title.strip(), page_num=0)
+        notice_sect.add(h1)
+
+    notice_p = StructElement("P", text=_ACCESSIBILITY_NOTICE, page_num=0)
+    notice_sect.add(notice_p)
+
+    lang_p = StructElement("P", text=_LANG_DIRECTION_NOTE, page_num=0)
+    notice_sect.add(lang_p)
+
+    # Check if first element is already an H1 (don't duplicate title)
+    result = list(elements)
+    if result and result[0].elem_type == "H1" and title:
+        # Remove generated H1 from notice (already exists in document)
+        notice_sect.children = [c for c in notice_sect.children
+                                 if c.elem_type != "H1"]
+
+    return [notice_sect] + result
+
+
+def _elem_to_dict(e) -> dict:
+    """המרת StructElement ל-dict לשמירה ב-JSON."""
+    d = {"type": e.elem_type, "text": e.text, "page": e.page_num}
+    if e.children:
+        d["children"] = [_elem_to_dict(c) for c in e.children]
+    if e.attrs:
+        d["attrs"] = e.attrs
+    return d
+
+
 def process_scanned_pdf(page_paths, output_pdf, lang="he-IL", title="מסמך נגיש",
-                         author="", ai_descriptions=None, stamp=False):
+                         author="", ai_descriptions=None, stamp=False,
+                         structure_json_path=None):
     """
     Full semantic pipeline for scanned (image-based) PDFs.
 
@@ -1685,6 +1752,19 @@ def process_scanned_pdf(page_paths, output_pdf, lang="he-IL", title="מסמך נ
         if page_structures:
             elements = merge_ai_structure(elements, page_structures, lang=lang)
             print(f"  לאחר מיזוג AI: {len(elements)} אלמנטים")
+
+    # הוספת הבהרת נגישות בראש המסמך (IS 5568 / מסמכים רשמיים)
+    elements = _prepend_accessibility_notice(elements, title)
+
+    # שמירת מבנה ל-JSON אם נדרש (לשימוש modal בממשק)
+    if structure_json_path and elements:
+        try:
+            with open(structure_json_path, "w", encoding="utf-8") as _sf:
+                json.dump([_elem_to_dict(e) for e in elements], _sf,
+                          ensure_ascii=False, indent=2)
+            print(f"  מבנה נשמר: {structure_json_path} ({len(elements)} אלמנטים)")
+        except Exception as _je:
+            print(f"  [!] שגיאה בשמירת מבנה JSON: {_je}")
 
     # ── OCR quality gate (before structure validation) ────────────────────
     ocr_page_texts = {pg: t for pg, t in page_texts.items()}
@@ -1797,11 +1877,13 @@ def main():
     parser.add_argument("--author",       default="")
     parser.add_argument("--dpi",          type=int, default=200)
     parser.add_argument("--stamp",        action="store_true")
-    parser.add_argument("--ocr",          action="store_true")
-    parser.add_argument("--force-ocr",    action="store_true")
-    parser.add_argument("--text-json",    default=None)
-    parser.add_argument("--page-titles",  default=None)
-    parser.add_argument("--tables-json",  default=None)
+    parser.add_argument("--ocr",             action="store_true")
+    parser.add_argument("--force-ocr",       action="store_true")
+    parser.add_argument("--text-json",       default=None)
+    parser.add_argument("--page-titles",     default=None)
+    parser.add_argument("--tables-json",     default=None)
+    parser.add_argument("--structure-json",  default=None,
+                        help="נתיב לכתיבת מבנה המסמך כ-JSON (לשימוש app.py)")
     args = parser.parse_args()
 
     # מצב בדיקת היררכיה — לא צריך --input/--output
@@ -1880,6 +1962,7 @@ def main():
                 lang=args.lang, title=args.title, author=args.author,
                 ai_descriptions=ai_descriptions,
                 page_structures=page_structures,
+                structure_json_path=args.structure_json,
             )
         else:
             # Scanned PDF — semantic pipeline (OCR + per-MCID structure injection)
@@ -1889,6 +1972,7 @@ def main():
                 lang=args.lang, title=args.title, author=args.author,
                 ai_descriptions=ai_descriptions,
                 stamp=args.stamp,
+                structure_json_path=args.structure_json,
             )
 
         if args.stamp:

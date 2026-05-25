@@ -1,3 +1,4 @@
+<!-- v2-reprocess -->
 <!DOCTYPE html>
 <html lang="he" dir="rtl">
 <head>
@@ -759,6 +760,7 @@ function renderHistory(docs) {
     const actions = d.status === 'done'
       ? `<button class="btn-sm primary" onclick="window.location='/api/download/${d.id}'">הורדה</button>
          <button class="btn-sm" style="background:var(--blue-s);color:var(--blue)" onclick="openReview('${d.id}','${d.original_name.replace(/'/g,"\\'")}')">סקור מבנה</button>
+         <button class="btn-sm" style="background:#fff0e8;color:#c05000;border:1px solid #f5a87a" onclick="reprocessDoc('${d.id}')">↺ הנגשה מחדש</button>
          <button class="btn-sm danger" onclick="deleteDoc('${d.id}')">מחיקה</button>`
       : `<button class="btn-sm danger" onclick="deleteDoc('${d.id}')">מחיקה</button>`;
 
@@ -793,6 +795,14 @@ function renderHistory(docs) {
   }).join('');
 }
 
+function formatTime(seconds) {
+  if (!seconds && seconds !== 0) return '—';
+  if (seconds < 60) return `${Math.round(seconds)} ש"`;
+  const m = Math.floor(seconds / 60);
+  const s = Math.round(seconds % 60);
+  return s > 0 ? `${m}:${String(s).padStart(2,'0')} ד'` : `${m} ד'`;
+}
+
 function filterHistory() {
   const q = document.getElementById('search-input').value.trim().toLowerCase();
   if (!q) { renderHistory(allHistory); return; }
@@ -803,6 +813,31 @@ async function deleteDoc(id) {
   if (!confirm('למחוק את המסמך?')) return;
   await fetch(`/api/delete/${id}`, { method: 'DELETE' });
   loadHistory();
+}
+
+async function reprocessDoc(id) {
+  if (!confirm('להריץ הנגשה מחדש על המסמך?')) return;
+  try {
+    const res = await fetch(`/api/reprocess/${id}`, { method: 'POST' });
+    console.log('reprocess status:', res.status, res.url);
+    if (res.status === 302 || res.redirected) {
+      alert('נדרשת כניסה מחדש — אנא רענן את הדף.');
+      window.location.reload();
+      return;
+    }
+    const text = await res.text();
+    console.log('reprocess body:', text);
+    const data = JSON.parse(text);
+    if (data.job_id) {
+      alert('העיבוד החל. המסמך יופיע ברשימה בסיום.');
+      loadHistory();
+    } else {
+      alert('שגיאה: ' + (data.error || 'לא ידוע'));
+    }
+  } catch(e) {
+    alert('שגיאת רשת: ' + e.message);
+    console.error('reprocess error:', e);
+  }
 }
 
 async function updateStats() {
@@ -875,6 +910,7 @@ setInterval(loadHistory, 20000);
 /* Element rows */
 .rv-elem {
   display:flex; align-items:flex-start; gap:8px;
+  flex-direction: row; direction: ltr;
   padding:5px 6px; border-radius:6px; margin-bottom:3px;
   border:1px solid transparent;
 }
@@ -1048,7 +1084,7 @@ function renderElem(container, elem, path, depth) {
 
   const row = document.createElement('div');
   row.className = 'rv-elem';
-  row.style.paddingRight = (6 + indent) + 'px';
+  row.style.paddingLeft = (6 + indent) + 'px';
   row.dataset.path = JSON.stringify(path);
 
   // Type badge

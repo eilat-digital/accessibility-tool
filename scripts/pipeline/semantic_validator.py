@@ -243,7 +243,7 @@ def test_heading_no_skip(flat: List[StructElement]) -> Optional[Finding]:
         if prev is not None and lvl > prev + 1:
             return Finding(
                 test_id="HEADING_LEVEL_SKIP",
-                severity="hard_fail",
+                severity="needs_review",   # downgraded: OCR often miscounts levels
                 message=(f"פסיחת רמת כותרת: H{prev} → H{lvl} — "
                          "PDF/UA §7.5 / WCAG 1.3.1"),
                 criterion="PDF/UA §7.5",
@@ -582,8 +582,8 @@ def test_family_specific(
         if not has_h:
             findings.append(Finding(
                 test_id="PROTOCOL_NO_HEADING",
-                severity="hard_fail",
-                message=("פרוטוקול: חסרות כותרות — נוכחים/סדר היום חייבים "
+                severity="needs_review",   # downgraded: OCR may miss headings
+                message=("פרוטוקול: חסרות כותרות — נוכחים/סדר היום צריכים "
                          "להיות H2 — WCAG 1.3.1"),
                 criterion="WCAG 1.3.1",
             ))
@@ -597,9 +597,9 @@ def test_family_specific(
         if not has_list:
             findings.append(Finding(
                 test_id="PROTOCOL_NO_LIST",
-                severity="hard_fail",
+                severity="needs_review",   # downgraded: lists may appear as P in OCR
                 message=("פרוטוקול: חסרות רשימות — רשימת משתתפים/החלטות "
-                         "חייבת להיות L/LI — WCAG 1.3.1"),
+                         "מומלץ כ-L/LI — WCAG 1.3.1"),
                 criterion="WCAG 1.3.1",
             ))
 

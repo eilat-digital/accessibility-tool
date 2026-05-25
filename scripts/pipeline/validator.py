@@ -20,10 +20,12 @@ from .models import StructElement, ValidationResult
 # Scoring weights  (must sum to 100)
 # ---------------------------------------------------------------------------
 _WEIGHTS: Dict[str, int] = {
-    "has_struct_tree":   25,   # StructTreeRoot present
-    "has_text_layer":    35,   # text layer / ActualText readable
-    "has_lang":          20,   # /Lang at Root level (he-IL)
+    "has_text_layer":    30,   # text layer / ActualText readable
+    "has_struct_tree":   20,   # StructTreeRoot present
+    "has_lang":          15,   # /Lang at Root level (he-IL)
+    "heading_quality":   10,   # H1 + hierarchy ok (IS 5568 §7.5 / WCAG 1.3.1)
     "has_title":         10,   # /Title in metadata
+    "reading_order":      5,   # logical reading order (WCAG 1.3.2)
     "has_pdfua_xmp":      5,   # pdfuaid:part=1 in XMP
     "has_markinfo":       5,   # /MarkInfo/Marked=true
 }
@@ -125,14 +127,29 @@ class StructValidator:
         components["has_pdfua_xmp"] = _WEIGHTS["has_pdfua_xmp"]
         components["has_markinfo"]  = _WEIGHTS["has_markinfo"]
 
-        # — Structural sub-checks (informational — gate already covers hard cases) —
+        # — Heading quality (scored): H1 present + hierarchy ok —
         headings = [e for e in flat if e.elem_type in
                     ("H1","H2","H3","H4","H5","H6")]
         if not headings:
+            components["heading_quality"] = 0
             warnings.append("אין כותרות מתויגות (H1-H3) — WCAG 1.3.1")
+        elif not any(e.elem_type == "H1" for e in headings):
+            components["heading_quality"] = _WEIGHTS["heading_quality"] // 2
+            warnings.append("חסר H1 — כותרת ראשית אחת נדרשת — IS 5568 §7.5")
         elif not _heading_hierarchy_ok(headings):
+            components["heading_quality"] = _WEIGHTS["heading_quality"] // 2
             warnings.append("היררכיית כותרות שגויה (פסיחת רמה) — PDF/UA §7.5")
+        else:
+            components["heading_quality"] = _WEIGHTS["heading_quality"]
 
+        # — Reading order (scored) —
+        if _reading_order_ok(elements):
+            components["reading_order"] = _WEIGHTS["reading_order"]
+        else:
+            components["reading_order"] = 0
+            warnings.append("סדר קריאה עלול להיות שגוי — WCAG 1.3.2")
+
+        # — Lists / Tables: informational only —
         lists   = [e for e in flat if e.elem_type == "L"]
         lbodies = [e for e in flat if e.elem_type == "LBody"]
         if lists and not lbodies:
@@ -143,15 +160,14 @@ class StructValidator:
         if tables and not ths:
             warnings.append("טבלאות קיימות אך חסרות כותרות עמודות TH — IS 5568 §7.2")
 
-        if not _reading_order_ok(elements):
-            warnings.append("סדר קריאה עלול להיות שגוי — WCAG 1.3.2")
-
         # ── Score computation ────────────────────────────────────────────────
         score = min(100, sum(components.values()))
 
-        # Hard-fail gate overrides: cap score and force non_compliant
+        # Gate overrides: hard_fail → cap 45, needs_review → cap 69
         if gate is not None and gate.hard_fails:
             score = min(score, 45)
+        elif gate is not None and gate.needs_review:
+            score = min(score, 69)
 
         status = _score_to_status(score)
 
@@ -251,6 +267,22 @@ class FileValidator:
                 if not marked:
                     warnings.append("MarkInfo/Marked לא מוגדר — PDF/UA §7.3")
 
+                # — Heading quality (scored from struct tree) —
+                head_types, ro_ok = _check_heading_and_order(pdf)
+                if not head_types:
+                    components["heading_quality"] = 0
+                    warnings.append("אין כותרות בעץ המבנה — WCAG 1.3.1")
+                elif "H1" not in head_types:
+                    components["heading_quality"] = _WEIGHTS["heading_quality"] // 2
+                    warnings.append("חסר H1 — כותרת ראשית אחת נדרשת — IS 5568 §7.5")
+                else:
+                    components["heading_quality"] = _WEIGHTS["heading_quality"]
+
+                # — Reading order (scored) —
+                components["reading_order"] = _WEIGHTS["reading_order"] if ro_ok else 0
+                if not ro_ok:
+                    warnings.append("סדר קריאה עלול להיות שגוי — WCAG 1.3.2")
+
         except Exception as exc:
             return ValidationResult(
                 score=0, status="error",
@@ -342,6 +374,58 @@ def _check_text_layer(pdf_path: str, pdf, total_pages: int) -> int:
         except Exception:
             pass
     return 0
+
+
+def _check_heading_and_order(pdf) -> tuple:
+    """Return (heading_types_set, reading_order_ok) from struct tree."""
+    import pikepdf
+    heading_types: set = set()
+    page_nums: list = []
+
+    str_root = pdf.Root.get("/StructTreeRoot")
+    if not str_root:
+        return heading_types, True
+
+    def walk(obj, depth=0):
+        if depth > 50:
+            return
+        try:
+            if isinstance(obj, pikepdf.Dictionary):
+                otype = str(obj.get("/Type", "")).lstrip("/")
+                if otype == "StructElem":
+                    s = str(obj.get("/S", "")).lstrip("/")
+                    if s in ("H1","H2","H3","H4","H5","H6"):
+                        heading_types.add(s)
+                    pg = obj.get("/Pg")
+                    if pg is not None:
+                        try:
+                            page_nums.append(int(str(pg.objgen[0])))
+                        except Exception:
+                            pass
+                k = obj.get("/K")
+                if isinstance(k, pikepdf.Array):
+                    for child in k:
+                        walk(child, depth + 1)
+                elif isinstance(k, pikepdf.Dictionary):
+                    walk(k, depth + 1)
+            elif isinstance(obj, pikepdf.Array):
+                for item in obj:
+                    walk(item, depth + 1)
+        except Exception:
+            pass
+
+    doc_k = str_root.get("/K")
+    if doc_k is not None:
+        walk(doc_k)
+
+    # Reading order: no large backward jumps
+    ro_ok = True
+    for i in range(1, len(page_nums)):
+        if page_nums[i] < page_nums[i - 1] - 2:
+            ro_ok = False
+            break
+
+    return heading_types, ro_ok
 
 
 def _check_struct_tree(pdf) -> tuple:

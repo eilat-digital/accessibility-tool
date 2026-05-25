@@ -66,6 +66,7 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 200 * 1024 * 1024  # 200MB
+app.config['TEMPLATES_AUTO_RELOAD'] = True
 
 # -- Auth --
 # סיסמה מוגדרת ב-ACCESS_PASSWORD בקובץ .env / משתני סביבה.
@@ -510,6 +511,7 @@ def process_pdf(job_id, input_path, output_path, original_name, file_size):
 
         # Run accessibility script
         logger.info(f"Running accessibility script for job {job_id}")
+        structure_json_path = Path(TMP_RUNTIME_DIR) / f"struct_{job_id}.json"
         cmd = [
             PYTHON, str(SCRIPT_PATH),
             '--input', str(input_path),
@@ -520,6 +522,7 @@ def process_pdf(job_id, input_path, output_path, original_name, file_size):
             '--dpi', dpi,
             '--stamp',
             '--ocr',   # IS 5568: scanned PDFs must have a text layer for screen readers
+            '--structure-json', str(structure_json_path),
         ]
         jobs[job_id]['progress'] = 50
 
@@ -622,12 +625,35 @@ def process_pdf(job_id, input_path, output_path, original_name, file_size):
         log_operation(job_id, 'complete', 'success', f'Time: {processing_time:.1f}s, Score: {validation_report["score"]}')
         logger.info(f"Completed job {job_id}: accessibility={validation_report['status']}, score={validation_report['score']}")
 
-        # Background: extract semantic structure for Review UI
-        threading.Thread(
-            target=_extract_and_store_structure,
-            args=(job_id, str(output_path)),
-            daemon=True,
-        ).start()
+        # שמירת מבנה OCR ישירות מהסקריפט (מדויק יותר מחילוץ חוזר מה-PDF)
+        if structure_json_path.exists():
+            try:
+                with open(structure_json_path, encoding="utf-8") as _f:
+                    struct_data = json.load(_f)
+                if struct_data:
+                    with get_db() as conn:
+                        conn.execute(
+                            "UPDATE documents SET structure_json=? WHERE id=?",
+                            (json.dumps(struct_data, ensure_ascii=False), job_id),
+                        )
+                        conn.commit()
+                    logger.info(f"Structure from OCR stored for {job_id}: {len(struct_data)} elements")
+                structure_json_path.unlink(missing_ok=True)
+            except Exception as _se:
+                logger.warning(f"Could not read structure JSON for {job_id}: {_se}")
+                # Fallback: extract from PDF
+                threading.Thread(
+                    target=_extract_and_store_structure,
+                    args=(job_id, str(output_path)),
+                    daemon=True,
+                ).start()
+        else:
+            # Fallback for digital PDFs: extract from processed PDF
+            threading.Thread(
+                target=_extract_and_store_structure,
+                args=(job_id, str(output_path)),
+                daemon=True,
+            ).start()
 
     except Exception as e:
         logger.error(f"Error processing job {job_id}: {str(e)}")
@@ -900,6 +926,49 @@ def delete(job_id):
     
     logger.info(f"Document deleted: {job_id}")
     return jsonify({'ok': True})
+
+
+@app.route('/api/reprocess/<job_id>', methods=['POST'])
+@login_required
+def reprocess(job_id):
+    """הנגשה מחדש — מריץ את הצינור מחדש על ה-output הקיים כ-input חדש."""
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT output_path, original_name FROM documents WHERE id=?", (job_id,)
+        ).fetchone()
+
+    if not row or not row['output_path']:
+        return jsonify({'error': 'מסמך לא נמצא'}), 404
+
+    src = Path(row['output_path'])
+    if not src.exists():
+        return jsonify({'error': 'קובץ המקור לא נמצא'}), 404
+
+    original_name = row['original_name']
+    new_job_id = str(uuid.uuid4())
+    new_input   = UPLOAD_DIR   / f"{new_job_id}_{src.name}"
+    new_output  = OUTPUT_DIR   / f"{new_job_id}_accessible.pdf"
+
+    import shutil
+    shutil.copy2(src, new_input)
+
+    with get_db() as conn:
+        conn.execute("""
+            INSERT INTO documents (id, original_name, file_size, status, created_at, updated_at)
+            VALUES (?, ?, ?, 'queued', ?, ?)
+        """, (new_job_id, original_name, src.stat().st_size,
+              now_il().isoformat(), now_il().isoformat()))
+        conn.commit()
+
+    jobs[new_job_id] = {'status': 'queued', 'progress': 0}
+    threading.Thread(
+        target=process_pdf,
+        args=(new_job_id, new_input, new_output, original_name, src.stat().st_size),
+        daemon=True,
+    ).start()
+
+    logger.info(f"Reprocess started: {job_id} → {new_job_id}")
+    return jsonify({'job_id': new_job_id})
 
 @app.route('/api/validate/<job_id>')
 @login_required

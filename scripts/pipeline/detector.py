@@ -636,7 +636,12 @@ class StructureDetector:
         table_elems = [self._build_table_elem(t) for t in raw_tables]
 
         # 6. Merge: insert tables at their natural reading-order position
-        return self._merge(non_table_elems, table_elems)
+        merged = self._merge(non_table_elems, table_elems)
+
+        # 7. Post-process: enforce IS 5568 structural requirements
+        merged = _post_process_elements(merged)
+
+        return merged
 
     # ------------------------------------------------------------------
     def _detect_key_value_groups(self, blocks: List[TextBlock]) -> Tuple[List[dict], Set[int]]:
@@ -682,7 +687,8 @@ class StructureDetector:
 
         return tables, claimed
 
-    def _make_list(self, blocks: List[TextBlock], strip_marker: bool = True) -> StructElement:
+    def _make_list(self, blocks: List[TextBlock], strip_marker: bool = False) -> StructElement:
+        # strip_marker=False: preserve original numbering (2.1.2, א., etc.) per IS 5568
         list_elem = StructElement("L", page_num=blocks[0].page_num)
         for lb in blocks:
             item_text = _strip_list_marker(lb.text) if strip_marker else lb.text.strip()
@@ -1246,3 +1252,130 @@ def _ai_dicts_to_elems(items: List[dict], page_num: int) -> List[StructElement]:
 
     flush_list()
     return elements
+
+
+# ---------------------------------------------------------------------------
+# IS 5568 post-processing: enforce structural requirements
+# ---------------------------------------------------------------------------
+
+_HEADING_LEVEL = {"H1": 1, "H2": 2, "H3": 3, "H4": 4, "H5": 5, "H6": 6}
+_HEADING_NAMES = {v: k for k, v in _HEADING_LEVEL.items()}
+
+_BROKEN_LINE_MAX_WORDS  = 12   # P with ≤ this many words is a candidate for merge
+_BROKEN_LINE_MAX_CHARS  = 80   # P with ≤ this many chars is a candidate
+_BROKEN_LINE_GAP_PTS    = 6.0  # vertical gap threshold: same para if gap ≤ this
+
+
+def _post_process_elements(elements: List[StructElement]) -> List[StructElement]:
+    """
+    Enforce IS 5568 / WCAG 2.1 structural requirements on the element list:
+
+    1. Single H1  — only the first H1 is kept; all subsequent H1s become H2.
+    2. Heading hierarchy — no level-skipping. H1→H3 is patched to H1→H2.
+    3. Merge broken lines — consecutive short P elements that are vertically
+       adjacent (gap ≤ _BROKEN_LINE_GAP_PTS) are merged into one paragraph,
+       preserving the full text in reading order.
+    """
+    if not elements:
+        return elements
+
+    # ── 1+2: single H1 + hierarchy normalization ─────────────────────────
+    h1_seen = False
+    prev_level = 0
+    normalized: List[StructElement] = []
+
+    for elem in elements:
+        if elem.elem_type in _HEADING_LEVEL:
+            level = _HEADING_LEVEL[elem.elem_type]
+
+            # Enforce single H1: demote extra H1s
+            if level == 1 and h1_seen:
+                level = 2
+            if level == 1:
+                h1_seen = True
+
+            # Fix hierarchy skip: e.g. prev=1 curr=3 → curr becomes 2
+            if prev_level > 0 and level > prev_level + 1:
+                level = prev_level + 1
+
+            new_type = _HEADING_NAMES.get(level, "H3")
+            if new_type != elem.elem_type:
+                patched = StructElement(
+                    new_type, text=elem.text,
+                    page_num=elem.page_num, source_bbox=elem.source_bbox,
+                    attrs=dict(elem.attrs),
+                )
+                for child in elem.children:
+                    patched.add(child)
+                elem = patched
+
+            prev_level = _HEADING_LEVEL[elem.elem_type]
+        else:
+            # Non-heading elements don't reset the heading counter
+            pass
+
+        normalized.append(elem)
+
+    # ── 3: merge broken lines ─────────────────────────────────────────────
+    merged: List[StructElement] = []
+    i = 0
+    while i < len(normalized):
+        elem = normalized[i]
+        if elem.elem_type != "P":
+            merged.append(elem)
+            i += 1
+            continue
+
+        # Check if this P is a broken-line candidate
+        text = elem.text.strip()
+        words = len(text.split())
+        chars = len(text)
+
+        if words > _BROKEN_LINE_MAX_WORDS or chars > _BROKEN_LINE_MAX_CHARS:
+            merged.append(elem)
+            i += 1
+            continue
+
+        # Try to accumulate adjacent short P elements (same page, close vertically)
+        run_texts = [text]
+        run_bbox  = elem.source_bbox
+        j = i + 1
+        while j < len(normalized):
+            nxt = normalized[j]
+            if nxt.elem_type != "P":
+                break
+            nxt_text  = nxt.text.strip()
+            nxt_words = len(nxt_text.split())
+            nxt_chars = len(nxt_text)
+            if nxt_words > _BROKEN_LINE_MAX_WORDS or nxt_chars > _BROKEN_LINE_MAX_CHARS:
+                break
+            if nxt.page_num != elem.page_num:
+                break
+            # Vertical proximity check
+            if (run_bbox is not None and nxt.source_bbox is not None):
+                gap = nxt.source_bbox[1] - run_bbox[3]   # next.y_top - current.y_bottom
+                if gap > _BROKEN_LINE_GAP_PTS:
+                    break
+                run_bbox = (
+                    min(run_bbox[0], nxt.source_bbox[0]),
+                    run_bbox[1],
+                    max(run_bbox[2], nxt.source_bbox[2]),
+                    nxt.source_bbox[3],
+                )
+            run_texts.append(nxt_text)
+            j += 1
+
+        if len(run_texts) > 1:
+            # Merge: join with space (RTL text, space separator)
+            combined = " ".join(run_texts)
+            merged_elem = StructElement(
+                "P", text=combined,
+                page_num=elem.page_num, source_bbox=run_bbox,
+            )
+            merged.append(merged_elem)
+            i = j
+        else:
+            merged.append(elem)
+            i += 1
+
+    return merged

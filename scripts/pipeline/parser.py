@@ -28,6 +28,25 @@ except ImportError:
     _PDFMINER_OK = False
 
 _BOLD_KEYWORDS = re.compile(r"bold|heavy|black|demi|semibold", re.I)
+_CID_PATTERN = re.compile(r"\(cid:\d+\)")
+# pdfminer emits U+00FE U+00FF when it reads a UTF-16 BE BOM without a ToUnicode map
+_UTF16_BOM_CHARS = "\xfe\xff"
+
+
+def _cid_ratio(text: str) -> float:
+    """Return fraction of text that is CID placeholders or UTF-16 BOM garbage."""
+    if not text:
+        return 0.0
+    cid_chars = sum(len(m.group()) for m in _CID_PATTERN.finditer(text))
+    bom_chars = text.count("\xfe") + text.count("\xff")
+    return (cid_chars + bom_chars) / max(len(text), 1)
+
+
+def _clean_cid(text: str) -> str:
+    """Remove CID placeholders and UTF-16 BOM markers from text."""
+    text = _CID_PATTERN.sub("", text)
+    text = text.replace("\xfe", "").replace("\xff", "")
+    return re.sub(r"\s+", " ", text).strip()
 
 
 # ---------------------------------------------------------------------------
@@ -61,8 +80,16 @@ def _is_bold_font(font_name: str) -> bool:
     return bool(_BOLD_KEYWORDS.search(font_name))
 
 
+_CID_SKIP_RATIO = 0.4  # skip block if >40% is CID garbage
+
+
 def _line_to_block(line: LTTextLine, page_height: float, page_num: int) -> Optional[TextBlock]:
-    text = line.get_text().strip()
+    raw = line.get_text().strip()
+    if not raw:
+        return None
+    if _cid_ratio(raw) > _CID_SKIP_RATIO:
+        return None
+    text = _clean_cid(raw)
     if not text:
         return None
 
@@ -139,15 +166,23 @@ def extract_blocks(pdf_path: str) -> List[TextBlock]:
 
 def has_text(pdf_path: str, min_chars: int = 50) -> bool:
     """
-    Quick check: does this PDF contain selectable text?
-    Used to decide scanned vs digital pipeline branch.
+    Quick check: does this PDF contain selectable Unicode text?
+    Returns False for PDFs where most text is CID-encoded (no ToUnicode map),
+    so they fall through to the OCR path.
     """
     if not _PDFMINER_OK:
         return False
     try:
         from pdfminer.high_level import extract_text
         text = extract_text(pdf_path) or ""
-        return len(text.strip()) >= min_chars
+        text = text.strip()
+        if len(text) < min_chars:
+            return False
+        # If most of the extracted text is CID/BOM garbage, treat as scanned
+        if _cid_ratio(text) > 0.3:
+            return False
+        cleaned = _clean_cid(text)
+        return len(cleaned) >= min_chars
     except Exception:
         return False
 

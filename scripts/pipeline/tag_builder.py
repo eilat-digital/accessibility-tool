@@ -28,6 +28,8 @@ from typing import Dict, List, Optional, Tuple
 import pikepdf
 from pikepdf import Array, Dictionary, Name, String
 
+from bidi.algorithm import get_display
+
 from .models import StructElement, HEADING_TYPES, TABLE_TYPES, LIST_TYPES
 
 # PDF/UA attribute owners
@@ -43,6 +45,23 @@ _ALL_VALID = (
      "Span", "Link", "Note", "Reference",
      "TOC", "TOCI", "Index", "Formula"}
 )
+
+
+def fix_rtl(text: str, source: str = "pdf") -> str:
+    """
+    source="pdf"  — טקסט מ-pdfminer: מגיע בסדר ויזואלי → get_display ממיר ללוגי.
+    source="ocr"  — טקסט מ-Tesseract: כבר בסדר לוגי → ניקוי רווחים בלבד.
+    """
+    if not text:
+        return ""
+    text = re.sub(r"\s+", " ", text).strip()
+    if source == "pdf":
+        try:
+            return get_display(text)
+        except Exception:
+            pass
+    return text
+
 
 # ============================================================
 # Hebrew-safe PDF string decoding
@@ -227,9 +246,10 @@ def _inject_mcids_into_page(
 class _Builder:
     """Creates pikepdf indirect Dictionary objects for struct elements."""
 
-    def __init__(self, pdf: pikepdf.Pdf, lang: str) -> None:
-        self.pdf  = pdf
-        self.lang = lang
+    def __init__(self, pdf: pikepdf.Pdf, lang: str, text_source: str = "pdf") -> None:
+        self.pdf         = pdf
+        self.lang        = lang
+        self.text_source = text_source  # "pdf" → visual order needs get_display; "ocr" → logical order
 
     def make_elem(
         self,
@@ -249,11 +269,11 @@ class _Builder:
         )
         d["/Lang"] = String(self.lang)
         if actual_text:
-            d["/ActualText"] = String(actual_text)
+            d["/ActualText"] = String(fix_rtl(actual_text, self.text_source))
         if alt:
-            d["/Alt"] = String(alt)
+            d["/Alt"] = String(fix_rtl(alt, self.text_source))
         if title:
-            d["/T"] = String(title)
+            d["/T"] = String(fix_rtl(title, self.text_source))
         if mcid is not None and page_obj is not None:
             d["/K"]  = int(mcid)
             d["/Pg"] = page_obj
@@ -376,7 +396,7 @@ def _build_elem_with_mcid(
     pk = b.make_elem(
         stype, parent_ref,
         actual_text=text,
-        alt=(text if stype == "Figure" else ""),
+        alt=(text or "תמונה") if stype == "Figure" else "",
         page_obj=(page_obj if elem_mcid is not None else None),
         mcid=elem_mcid,
     )
@@ -450,14 +470,12 @@ def _set_common_metadata(
     author: str,
 ) -> None:
     pdf.Root["/Lang"] = String(lang)
-    pdf.Root["/MarkInfo"] = pdf.make_indirect(
-        Dictionary(Marked=True)
-    )
-    pdf.Root["/ViewerPreferences"] = pdf.make_indirect(Dictionary(
+    pdf.Root["/MarkInfo"] = Dictionary(Marked=True)
+    pdf.Root["/ViewerPreferences"] = Dictionary(
         Direction=Name("/R2L"),
         DisplayDocTitle=True,
-    ))
-    pdf.Root["/RoleMap"] = pdf.make_indirect(Dictionary())
+    )
+    pdf.Root["/RoleMap"] = Dictionary()
 
     with pdf.open_metadata() as meta:
         meta["dc:language"] = lang
@@ -475,8 +493,7 @@ def _set_common_metadata(
         if "/Info" not in pdf.trailer:
             pdf.trailer["/Info"] = pdf.make_indirect(Dictionary())
         info = pdf.trailer["/Info"]
-        if title:
-            info["/Title"] = String(title)
+        info["/Title"] = String(title or "מסמך נגיש")
         if author:
             info["/Author"] = String(author)
         info["/Lang"] = String(lang)
@@ -485,6 +502,40 @@ def _set_common_metadata(
 
     for page in pdf.pages:
         page.obj["/Tabs"] = Name("/S")
+
+
+# ============================================================
+# Heading-level normalizer (prevents H1→H3 gaps that fail PAC)
+# ============================================================
+
+def _normalize_heading_levels(elements: List[StructElement]) -> List[StructElement]:
+    """
+    Renumber heading levels so no level is skipped.
+    H1→H3 becomes H1→H2; H2→H4 becomes H2→H3, etc.
+    Operates on a flat list (page order); children are untouched.
+    """
+    HEADING_ORDER = ("H1", "H2", "H3", "H4", "H5", "H6")
+    level_map: Dict[str, str] = {}
+    current_level = 0
+    result = []
+    for elem in elements:
+        if elem.elem_type not in HEADING_ORDER:
+            result.append(elem)
+            continue
+        desired = HEADING_ORDER.index(elem.elem_type) + 1
+        if desired > current_level + 1:
+            desired = current_level + 1
+        desired = max(1, min(desired, 6))
+        current_level = desired
+        new_type = f"H{desired}"
+        if new_type != elem.elem_type:
+            from dataclasses import replace as _dc_replace
+            try:
+                elem = _dc_replace(elem, elem_type=new_type)
+            except Exception:
+                pass
+        result.append(elem)
+    return result
 
 
 # ============================================================
@@ -517,8 +568,9 @@ def inject_digital(
       - /MarkInfo Marked=true
       - pdfuaid:part=1 in XMP
     """
+    elements = _normalize_heading_levels(elements)
     _set_common_metadata(pdf, lang, title, author)
-    b = _Builder(pdf, lang)
+    b = _Builder(pdf, lang, text_source="pdf")
 
     str_root = pdf.make_indirect(Dictionary(
         Type=Name("/StructTreeRoot"),
@@ -641,7 +693,7 @@ def inject_scanned(
     Returns parent_tree_map {page_index_0based → [figure_ref]}.
     """
     _set_common_metadata(pdf, lang, title, author)
-    b = _Builder(pdf, lang)
+    b = _Builder(pdf, lang, text_source="ocr")
 
     str_root = pdf.make_indirect(Dictionary(
         Type=Name("/StructTreeRoot"),
@@ -732,8 +784,9 @@ def inject_scanned_semantic(
       3. Build struct tree using _build_elem_with_mcid().
       4. Collect MCID owners with _collect_mcid_owners() for the ParentTree.
     """
+    elements = _normalize_heading_levels(elements)
     _set_common_metadata(pdf, lang, title, author)
-    b = _Builder(pdf, lang)
+    b = _Builder(pdf, lang, text_source="ocr")
 
     str_root = pdf.make_indirect(Dictionary(
         Type=Name("/StructTreeRoot"),
