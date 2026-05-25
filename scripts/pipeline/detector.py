@@ -62,6 +62,18 @@ def sort_reading_order(blocks: List[TextBlock]) -> List[TextBlock]:
     return result
 
 
+def detect_line_direction(text: str) -> str:
+    """
+    Return 'rtl' if text is primarily Hebrew/Arabic, 'ltr' otherwise.
+    Used to decide whether a block should be read right-to-left.
+    """
+    if not text:
+        return "rtl"  # default for Hebrew documents
+    heb_ara = sum(1 for c in text if "֐" <= c <= "ۿ")
+    latin   = sum(1 for c in text if c.isalpha() and c.isascii())
+    return "rtl" if heb_ara >= latin else "ltr"
+
+
 # ---------------------------------------------------------------------------
 # Arnona (municipal tax) table detection patterns
 # ---------------------------------------------------------------------------
@@ -418,7 +430,8 @@ class TableDetector:
                 row_y = b.y
                 row = [b]
         rows.append((row_y, row))
-        return rows
+        # Sort each row RTL (right → left, descending x) for Hebrew documents
+        return [(y, sorted(r, key=lambda b: -(b.x + b.width))) for y, r in rows]
 
     def _centres_compatible(self, ca: List[float], cb: List[float]) -> bool:
         if abs(len(ca) - len(cb)) > 1:
@@ -1100,10 +1113,35 @@ class StructureDetector:
             if level_str:
                 flush_list()
                 level = int(level_str[1])
+                heading_text = text
+                heading_bbox = block.bbox
+                # Absorb immediately-following fragment blocks that belong to
+                # the same heading: opening parenthesis continuations "(תשנ״ג"
+                # and standalone 4-digit year numbers like "2021" that OCR
+                # splits off from the line, within 50px vertically.
+                while i + 1 < len(blocks):
+                    nxt = blocks[i + 1]
+                    if nxt.page_num != block.page_num:
+                        break
+                    if abs(nxt.y - block.y) > 50:
+                        break
+                    nxt_text = nxt.text.strip()
+                    is_paren_frag = nxt_text.startswith("(") and len(nxt_text) <= 15
+                    is_year_frag  = bool(re.fullmatch(r"\d{4}", nxt_text))
+                    if not (is_paren_frag or is_year_frag):
+                        break
+                    heading_text = heading_text + " " + nxt_text
+                    # Extend bbox to encompass fragment
+                    x0 = min(heading_bbox[0], nxt.bbox[0])
+                    y0 = min(heading_bbox[1], nxt.bbox[1])
+                    x1 = max(heading_bbox[2], nxt.bbox[2])
+                    y1 = max(heading_bbox[3], nxt.bbox[3])
+                    heading_bbox = (x0, y0, x1, y1)
+                    i += 1
                 elements.append(StructElement.heading(
-                    level, text,
+                    level, heading_text,
                     page_num=block.page_num,
-                    bbox=block.bbox,
+                    bbox=heading_bbox,
                 ))
                 i += 1
                 continue

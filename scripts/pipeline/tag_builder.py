@@ -610,6 +610,11 @@ def inject_digital(
         Type=Name("/StructTreeRoot"),
         Lang=String(lang),
     ))
+    # WritingMode RTL — required by PDF/UA for Hebrew documents so that
+    # AT/screen readers traverse the struct tree right-to-left.
+    str_root["/A"] = pdf.make_indirect(Dictionary(
+        **{"/O": Name("/Layout"), "/WritingMode": Name("/RtL")}
+    ))
     doc_elem = b.make_elem("Document", str_root, title=title or "מסמך נגיש")
 
     by_page: Dict[int, List[StructElement]] = defaultdict(list)
@@ -733,6 +738,9 @@ def inject_scanned(
         Type=Name("/StructTreeRoot"),
         Lang=String(lang),
     ))
+    str_root["/A"] = pdf.make_indirect(Dictionary(
+        **{"/O": Name("/Layout"), "/WritingMode": Name("/RtL")}
+    ))
     doc_elem = b.make_elem("Document", str_root, title=title or "מסמך נגיש")
 
     parent_tree_map: Dict[int, List[pikepdf.Dictionary]] = {}
@@ -825,6 +833,9 @@ def inject_scanned_semantic(
     str_root = pdf.make_indirect(Dictionary(
         Type=Name("/StructTreeRoot"),
         Lang=String(lang),
+    ))
+    str_root["/A"] = pdf.make_indirect(Dictionary(
+        **{"/O": Name("/Layout"), "/WritingMode": Name("/RtL")}
     ))
     doc_elem = b.make_elem("Document", str_root, title=title or "מסמך נגיש")
 
