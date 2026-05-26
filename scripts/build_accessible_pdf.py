@@ -396,6 +396,7 @@ def run_ocr_with_positions(page_paths, lang_code="he-IL"):
 
             n = len(data["text"])
             lines: dict = {}   # (block_num, par_num, line_num) → line_data
+            page_confs: list = []   # confidence values for this page only
 
             for j in range(n):
                 if data["level"][j] != 5:   # 5 = word level
@@ -406,6 +407,7 @@ def run_ocr_with_positions(page_paths, lang_code="he-IL"):
                     conf = -1
                 if conf >= 0:
                     all_confidences.append(conf)
+                    page_confs.append(conf)
                 if conf < 20:
                     continue
                 word = str(data["text"][j]).strip()
@@ -427,6 +429,34 @@ def run_ocr_with_positions(page_paths, lang_code="he-IL"):
                     lines[key]["px_r"] = max(lines[key]["px_r"], px_r)
                     lines[key]["px_b"] = max(lines[key]["px_b"], px_b)
                 lines[key]["words"].append(word)
+
+            # Per-page confidence check (בעיה 2):
+            # If OCR confidence is below threshold, discard all extracted blocks
+            # and substitute a single accessibility-warning paragraph instead.
+            # This prevents garbage text ("= | / . 2 |") from entering the
+            # StructTree and misleading screen-reader users.
+            _OCR_CONF_THRESHOLD = 40   # mean confidence % — below = unreliable
+            page_mean_conf = (
+                sum(page_confs) / len(page_confs) if page_confs else 0
+            )
+            if page_mean_conf < _OCR_CONF_THRESHOLD and page_confs:
+                warning = (
+                    "תוכן עמוד זה לא זוהה בצורה אמינה על ידי מערכת ה-OCR "
+                    f"(רמת ביטחון: {page_mean_conf:.0f}%). "
+                    "יש לפנות לגרסה המקורית של המסמך לצפייה בתוכן עמוד זה."
+                )
+                print(f"  OCR עמוד {i}: ביטחון נמוך ({page_mean_conf:.0f}%) — מחליף בהערת אזהרה")
+                page_texts[i]  = warning
+                if _TB:
+                    page_blocks[i] = [_TB(
+                        text=warning, x=36.0, y=36.0,
+                        width=500.0, height=14.0,
+                        font_size=10.0, is_bold=False,
+                        page_num=i,
+                    )]
+                else:
+                    page_blocks[i] = []
+                continue   # skip normal block extraction for this page
 
             blocks     = []
             text_parts = []

@@ -102,6 +102,18 @@ _ARNONA_HEADER_KEYWORDS = {"סוג", "קוד", "תעריף", "בש", "שנתית
 # Optional leading section number in an arnona data row, e.g. "2.2.1" or "3"
 _ARNONA_SECTION_NUM_RE = re.compile(r"^(\d+(?:\.\d+)*)\s+(.+)", re.UNICODE)
 
+# בעיה 4: TH cells longer than this (chars) are demoted to TD
+_TH_MAX_LEN = 60
+
+# בעיה 5: Caption must be plain text — reject captions that look like
+# dates or isolated numbers/symbols.
+_BAD_CAPTION_RE = re.compile(
+    r"^\d+$"                          # pure number
+    r"|^\d+[\s/\-]\w"                 # date-like "12 ינואר" / "1 - פברואר"
+    r"|^[\d\s₪|/\\.,\-–—%]+$",       # mostly non-Hebrew symbols
+    re.UNICODE,
+)
+
 
 def _is_arnona_row(text: str) -> bool:
     """Return True if text matches the arnona rate-table row pattern."""
@@ -200,6 +212,38 @@ def _is_signature_text(text: str) -> bool:
     return len(stripped) <= 80 and re.search(r'_{4,}|-{4,}', stripped) is not None
 
 
+_H1_NOISE_STRIP_RE = re.compile(r"^[\₪|/\\\s]+|[\₪|/\\\s]+$", re.UNICODE)
+
+# Patterns for structural heading hierarchy (בעיה 7)
+_CHAPTER_RE   = re.compile(r"^פרק\s+", re.UNICODE)          # פרק א' / פרק 3
+_SECTION_NUM_RE = re.compile(r"^\d+\s*[.)\-]\s*[א-ת]", re.UNICODE)   # "3. הגדרות"
+_SUBSECTION_RE  = re.compile(r"^\d+\.\d+\s", re.UNICODE)               # "3.1 "
+
+
+def _clean_heading_text(text: str, level: int) -> str:
+    """
+    Strip OCR noise characters from heading text (בעיה 3).
+    Removes leading/trailing ₪ | / \\ that appear due to Hebrew font encoding.
+    """
+    cleaned = _H1_NOISE_STRIP_RE.sub("", text).strip()
+    return cleaned if cleaned else text
+
+
+def _structure_heading_level(text: str) -> Optional[int]:
+    """
+    Return a structural heading level based on document-outline patterns (בעיה 7).
+    פרק X → H2, numbered section → H3, subsection → H4. Returns None if no match.
+    """
+    t = text.strip()
+    if _CHAPTER_RE.match(t):
+        return 2
+    if _SUBSECTION_RE.match(t):
+        return 4
+    if _SECTION_NUM_RE.match(t):
+        return 3
+    return None
+
+
 def _is_hebrew_dominant(text: str) -> bool:
     """Return True if the text has at least as many Hebrew chars as Latin chars."""
     hebrew = sum(1 for c in text if '\u05D0' <= c <= '\u05EA')
@@ -275,13 +319,48 @@ class HeadingDetector:
                 return block.y - pg_sorted[i - 1].y_bottom
         return 0.0
 
+    # Characters that are common OCR noise in Hebrew government documents
+    # and should be stripped before heading text analysis.
+    _H1_NOISE_RE = re.compile(r"^[\₪|/\\\s]+|[\₪|/\\\s]+$", re.UNICODE)
+
+    # A text is "body text" (not a heading) when it starts with a numbered
+    # sub-clause followed by a full sentence, e.g. "1. האגרה תחול על..."
+    # These look like headings by font but are really numbered paragraphs.
+    _BODY_NUMBERED_RE = re.compile(
+        r"^\d+[.\)]\s+.{30,}",   # number + dot/paren + long text (≥30 chars)
+        re.UNICODE,
+    )
+
+    def _clean_h1_text(self, text: str) -> str:
+        """Strip leading/trailing OCR noise characters from H1 candidate text."""
+        return self._H1_NOISE_RE.sub("", text).strip()
+
     def classify(self, block: TextBlock) -> Optional[str]:
         text = block.text.strip()
         words = len(text.split())
 
+        # ── Hard exclusions ───────────────────────────────────────────────────
         if words > self._MAX_HEADING_WORDS:
             return None
         if _is_list_item(text):
+            return None
+        # Long numbered paragraph ("1. האגרה תחול גם...") is body text, not H
+        if self._BODY_NUMBERED_RE.match(text):
+            return None
+        # Very short tokens with no Hebrew — obviously not section headings
+        if len(text) <= 4 and not re.search(r"[א-ת]", text):
+            return None
+        # Count meaningful Hebrew letters vs. noise characters.
+        # A heading must have enough Hebrew to carry semantic weight.
+        # "ביום 23.6.2021" → 4 heb / 14 total ≈ 0.29 → BELOW threshold → P
+        # "פרק ח' - מועדים" → 13 heb / 17 total ≈ 0.76 → OK
+        # "4 ₪" → 0 heb → excluded above
+        heb_chars  = sum(1 for c in text if "א" <= c <= "ת")
+        non_space  = len(text.replace(" ", "")) or 1
+        if heb_chars / non_space < 0.35:
+            return None
+        # Date-containing text is body text even if short
+        if re.search(r"\d{1,2}[./\-]\d{1,2}[./\-]\d{2,4}", text):
             return None
 
         fs   = block.font_size
@@ -291,10 +370,8 @@ class HeadingDetector:
         large_gap = gap > avg_gap * 1.8 and avg_gap > 0
 
         # --- Colon-terminated section header (e.g. "נוכחים:", "על סדר היום:") ---
-        # Applies regardless of font/bold/gap — common Israeli protocol pattern.
         # Limit to short standalone headers (≤6 words, no mid-sentence punctuation).
         if _SECTION_COLON_RE.match(text) and words <= 6 and '.' not in text and ',' not in text:
-            # Detect level by position: large gap → H1, otherwise H2
             if large_gap and gap > avg_gap * 2.5 and avg_gap > 0:
                 return "H1"
             return "H2"
@@ -307,29 +384,48 @@ class HeadingDetector:
                 return "H1"
 
         # Uniform-font document (all text same size — common in Israeli official docs).
-        # Fall back to bold + gap + word-count heuristics.
+        # Tightened thresholds to prevent body text from being mis-classified H2.
         if self.p90 <= self.p60 * 1.05:   # all percentiles within 5%
             if not bold and not large_gap:
                 return None
+            # Must be short to be a heading in a uniform-font doc
             if words <= 8:
                 if large_gap and gap > avg_gap * 3.0:
                     return "H1"
                 if bold and large_gap:
                     return "H2"
-                if bold:
+                if bold and words <= 5:
+                    # Only very short bold text → H3; longer bold = body text
                     return "H3"
-            if words <= 15 and bold and large_gap:
-                return "H3"
+            # Medium-length bold+gap: H3 only if it looks like a section name
+            if words <= 12 and bold and large_gap:
+                # Extra guard: must not be a sentence (contain verb-like patterns)
+                if not re.search(r"[,.].*[א-ת]", text):
+                    return "H3"
             return None
 
-        # Variable-font document: percentile-based classification
+        # Variable-font document: percentile-based classification.
+        #
+        # For scanned/OCR documents, font_size is estimated from line height and
+        # many body lines cluster at exactly the 75th percentile.  We require a
+        # meaningful margin above p75 to avoid promoting body text to headings.
+        # Rule: the block must be noticeably larger than the 60th-percentile body
+        # text (≥10% larger) to qualify for H2/H3 via font size alone.
+        margin = self.p60 * 1.10   # 10% above median body
+
         if fs >= self.p90:
             return "H1"
-        if fs >= self.p75:
-            return "H2"
-        if fs >= self.p60 or (bold and fs > self.median):
-            if bold or large_gap:
-                return "H3"
+        if fs >= self.p75 and fs > margin:
+            # Strict: font must be above p75 AND above the body-text margin.
+            # H2 for short text (section name), H3 for medium-length text.
+            if words <= 10:
+                return "H2"
+            return "H3"
+        if fs >= self.p60 and fs > margin and (bold or large_gap):
+            return "H3"
+        # Bold + large gap can override font-size threshold
+        if bold and large_gap and words <= 8:
+            return "H3"
         return None
 
 
@@ -856,16 +952,41 @@ class StructureDetector:
         return tables, claimed
 
     def _make_list(self, blocks: List[TextBlock], strip_marker: bool = False) -> StructElement:
-        # strip_marker=False: preserve original numbering (2.1.2, א., etc.) per IS 5568
+        """
+        Build L > LI > LBody structure.
+
+        PDF/UA requires that LI is not empty — screen readers announce "list item"
+        and then immediately read child content.  We add a LLabel to LI carrying
+        the list marker (bullet / number / letter) so that "פריט רשימה — א." is
+        announced before the body text.  If no marker is present we set LLabel to
+        an empty string (still satisfies AT parsers that expect the LLabel child).
+        """
         list_elem = StructElement("L", page_num=blocks[0].page_num)
         for lb in blocks:
-            item_text = _strip_list_marker(lb.text) if strip_marker else lb.text.strip()
-            li = StructElement("LI", page_num=lb.page_num)
-            lbody = StructElement(
+            raw_text  = lb.text.strip()
+            item_text = _strip_list_marker(raw_text) if strip_marker else raw_text
+
+            # Extract the list marker for LLabel
+            marker = ""
+            m = re.match(
+                r"^([\(\[]?[\daא-תa-zA-Z]+[\.\)\]]|[-–—•·◦▪▸►→✓✗])\s+",
+                raw_text,
+            )
+            if m:
+                marker = m.group(1)
+
+            li = StructElement("LI", page_num=lb.page_num,
+                               source_bbox=lb.bbox)
+            # LLabel — holds the bullet/number (empty string if no marker)
+            # so that LI is never completely empty for screen readers (בעיה 6)
+            llabel = StructElement("LLabel", text=marker,
+                                   page_num=lb.page_num)
+            lbody  = StructElement(
                 "LBody", text=item_text,
                 page_num=lb.page_num, source_bbox=lb.bbox,
                 attrs={"original_text": lb.text},
             )
+            li.add(llabel)
             li.add(lbody)
             list_elem.add(li)
         return list_elem
@@ -904,6 +1025,9 @@ class StructureDetector:
         if not text or _is_list_item(text) or _is_key_value_text(text):
             return False
         if _SECTION_COLON_RE.match(text) or _legal_clause_level(text) is not None:
+            return False
+        # Structural heading patterns (פרק, numbered section) are never list items
+        if _structure_heading_level(text) is not None:
             return False
         if len(text) > _IMPLIED_LIST_MAX_CHARS or len(text.split()) > _IMPLIED_LIST_MAX_WORDS:
             return False
@@ -1038,7 +1162,18 @@ class StructureDetector:
             if clause_lvl is not None:
                 flush_list()
                 elements.append(StructElement.heading(
-                    clause_lvl, text, page_num=block.page_num, bbox=block.bbox
+                    clause_lvl, _clean_heading_text(text, clause_lvl),
+                    page_num=block.page_num, bbox=block.bbox,
+                ))
+                continue
+
+            # --- Structural pattern (פרק X → H2, numbered section → H3/H4) ---
+            struct_lvl = _structure_heading_level(text)
+            if struct_lvl is not None:
+                flush_list()
+                elements.append(StructElement.heading(
+                    struct_lvl, _clean_heading_text(text, struct_lvl),
+                    page_num=block.page_num, bbox=block.bbox,
                 ))
                 continue
 
@@ -1046,7 +1181,8 @@ class StructureDetector:
             if _ANNEX_RE.match(text) and len(text.split()) <= 10:
                 flush_list()
                 elements.append(StructElement.heading(
-                    2, text, page_num=block.page_num, bbox=block.bbox
+                    2, _clean_heading_text(text, 2),
+                    page_num=block.page_num, bbox=block.bbox,
                 ))
                 continue
 
@@ -1056,7 +1192,8 @@ class StructureDetector:
                 flush_list()
                 level = int(level_str[1])
                 elements.append(StructElement.heading(
-                    level, text, page_num=block.page_num, bbox=block.bbox
+                    level, _clean_heading_text(text, level),
+                    page_num=block.page_num, bbox=block.bbox,
                 ))
                 continue
 
@@ -1112,11 +1249,13 @@ class StructureDetector:
                 continue
 
             # --- heading? ---
+            # Check structural pattern first (פרק X → H2, numbered → H3/H4)
+            struct_level = _structure_heading_level(text)
             level_str = hd.classify(block)
-            if level_str:
+            if struct_level is not None or level_str:
                 flush_list()
-                level = int(level_str[1])
-                heading_text = text
+                level = struct_level if struct_level is not None else int(level_str[1])
+                heading_text = _clean_heading_text(text, level)
                 heading_bbox = block.bbox
                 # Absorb immediately-following fragment blocks that belong to
                 # the same heading: opening parenthesis continuations "(תשנ״ג"
@@ -1274,12 +1413,15 @@ class StructureDetector:
         if source == "arnona":
             pg = table_data["page_num"]
 
-            # Caption from preceding chapter heading
+            # Caption from preceding chapter heading — only if it passes the
+            # validity check (בעיה 5: reject date/number/symbol-only captions)
             cap_block = table_data.get("caption_block")
             if cap_block:
-                cap = StructElement("Caption", text=cap_block.text.strip(),
-                                    page_num=pg, source_bbox=cap_block.bbox)
-                table.add(cap)
+                cap_text = cap_block.text.strip()
+                if cap_text and not _BAD_CAPTION_RE.match(cap_text):
+                    cap = StructElement("Caption", text=cap_text,
+                                        page_num=pg, source_bbox=cap_block.bbox)
+                    table.add(cap)
 
             # ── THead ─────────────────────────────────────────────────────
             thead = StructElement("THead", page_num=pg)
@@ -1344,17 +1486,23 @@ class StructureDetector:
         if source == "keyvalue" and "rows_raw" in table_data:
             for block, label, value in table_data["rows_raw"]:
                 tr = StructElement("TR", page_num=table_data["page_num"])
-                th = StructElement(
-                    "TH", text=label, page_num=table_data["page_num"],
-                    source_bbox=block.bbox,
-                )
-                th.attrs["Scope"] = "Row"
-                td = StructElement(
+                # בעיה 4: long label → TD not TH
+                if len(label) < _TH_MAX_LEN:
+                    th = StructElement(
+                        "TH", text=label, page_num=table_data["page_num"],
+                        source_bbox=block.bbox,
+                    )
+                    th.attrs["Scope"] = "Row"
+                    tr.add(th)
+                else:
+                    tr.add(StructElement(
+                        "TD", text=label, page_num=table_data["page_num"],
+                        source_bbox=block.bbox,
+                    ))
+                tr.add(StructElement(
                     "TD", text=value, page_num=table_data["page_num"],
                     source_bbox=block.bbox,
-                )
-                tr.add(th)
-                tr.add(td)
+                ))
                 table.add(tr)
         elif source == "border" and "rows_raw" in table_data:
             # BorderTableDetector: rows_raw = List[List[{text, blocks, bbox}]]
@@ -1362,14 +1510,18 @@ class StructureDetector:
                 tr        = StructElement("TR", page_num=table_data["page_num"])
                 is_header = (i == 0)
                 for cell_dict in row_cells:
-                    ctype = "TH" if is_header else "TD"
+                    cell_text = cell_dict["text"]
+                    # בעיה 4: demote long "header" cells to TD
+                    if is_header and len(cell_text) < _TH_MAX_LEN:
+                        ctype = "TH"
+                    else:
+                        ctype = "TD"
                     cell  = StructElement(
-                        ctype,
-                        text=cell_dict["text"],
+                        ctype, text=cell_text,
                         page_num=table_data["page_num"],
                         source_bbox=cell_dict.get("bbox"),
                     )
-                    if is_header:
+                    if ctype == "TH":
                         cell.attrs["Scope"] = "Col"
                     tr.add(cell)
                 table.add(tr)
@@ -1379,13 +1531,18 @@ class StructureDetector:
                 tr        = StructElement("TR", page_num=table_data["page_num"])
                 is_header = (i == 0)
                 for cell_block in row_blocks:   # already sorted RTL
-                    ctype = "TH" if is_header else "TD"
+                    cell_text = cell_block.text.strip()
+                    # בעיה 4: demote long "header" cells to TD
+                    if is_header and len(cell_text) < _TH_MAX_LEN:
+                        ctype = "TH"
+                    else:
+                        ctype = "TD"
                     cell  = StructElement(
-                        ctype, text=cell_block.text.strip(),
+                        ctype, text=cell_text,
                         page_num=table_data["page_num"],
                         source_bbox=cell_block.bbox,
                     )
-                    if is_header:
+                    if ctype == "TH":
                         cell.attrs["Scope"] = "Col"
                     tr.add(cell)
                 table.add(tr)
