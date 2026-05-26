@@ -520,7 +520,8 @@ def process_pdf(job_id, input_path, output_path, original_name, file_size):
             '--title', title,
             '--author', 'עיריית אילת',
             '--dpi', dpi,
-            '--stamp',
+            # '--stamp' הוסר — חותמת מים מוסיפה Figure ומפריעה לסדר קריאה לוגי.
+            # זיהוי המקור מתבצע דרך XMP metadata (Producer/Creator) בלבד.
             '--ocr',   # IS 5568: scanned PDFs must have a text layer for screen readers
             '--structure-json', str(structure_json_path),
         ]

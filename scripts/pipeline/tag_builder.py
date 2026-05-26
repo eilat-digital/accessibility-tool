@@ -484,6 +484,39 @@ def _build_elem_with_mcid(
     if stype == "TH":
         b.set_th_attrs(pk, se.attrs.get("Scope", "Col"))
 
+    # Problem 3: Tables must have a Summary (IS 5568 / WCAG 1.3.1).
+    # Priority: explicit attrs["summary"] → Caption child text → TH header row
+    # → generic fallback.
+    if stype == "Table":
+        summary = se.attrs.get("summary", "")
+        if not summary:
+            # Try Caption child
+            for child in (se.children or []):
+                if child.elem_type == "Caption" and child.text:
+                    summary = child.text.strip()
+                    break
+        if not summary:
+            # Try first TH row text as summary
+            th_texts = []
+            for child in (se.children or []):
+                if child.elem_type in ("THead", "TR"):
+                    for cell in (child.children or []):
+                        if cell.elem_type == "TH" and cell.text:
+                            th_texts.append(cell.text.strip())
+                        # One level deeper (THead → TR → TH)
+                        for sub in (cell.children or []):
+                            if sub.elem_type == "TH" and sub.text:
+                                th_texts.append(sub.text.strip())
+                    if th_texts:
+                        break
+            if th_texts:
+                summary = "טבלה: " + " | ".join(th_texts[:5])
+        if not summary:
+            pg = getattr(se, "page_num", None)
+            summary = (f"טבלת נתונים בעמוד {pg}" if pg
+                       else "טבלת נתונים — ראה כותרת עמוד")
+        pk["/Summary"] = String(summary)
+
     if se.children:
         child_refs = []
         for child in se.children:
@@ -588,6 +621,15 @@ def _set_common_metadata(
         try:
             if "pdf:Producer" in meta:
                 del meta["pdf:Producer"]
+        except Exception:
+            pass
+        # Problem 4: color contrast cannot be verified automatically for
+        # scanned documents (depends on scan quality).  Flag for manual review
+        # per IS 5568 §4.4 and WCAG 1.4.3.  Any downstream audit tool can read
+        # this property to filter documents requiring manual contrast check.
+        try:
+            meta["x-accessibility:colorContrastVerified"] = "manual-check-required"
+            meta["x-accessibility:tool"] = "accessibility-tool — עיריית אילת"
         except Exception:
             pass
 
