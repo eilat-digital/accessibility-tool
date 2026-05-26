@@ -41,10 +41,10 @@ def ensure_deps():
 
 STAMP_PNG_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static", "accessibility_stamp.png")
 
-OCR_CONFIDENCE_THRESHOLD = 0.62
-OCR_BAD_CHAR_RATIO_THRESHOLD = 0.22
-OCR_GIBBERISH_RATIO_THRESHOLD = 0.35
-OCR_MIN_AVG_CHARS_PER_PAGE = 24
+OCR_CONFIDENCE_THRESHOLD = 0.30       # 30% — Hebrew Tesseract on government scans
+OCR_BAD_CHAR_RATIO_THRESHOLD = 0.35
+OCR_GIBBERISH_RATIO_THRESHOLD = 0.60  # OCR noise is common in scanned docs
+OCR_MIN_AVG_CHARS_PER_PAGE = 10       # even 10 chars/page = some OCR output
 
 FONT_CANDIDATES = [
     # Windows — עברית מובטחת
@@ -205,6 +205,15 @@ def _fix_hebrew_gershayim(text: str) -> str:
     return text
 
 
+# Isolated single non-meaningful token surrounded by spaces (OCR noise)
+# Matches a single char that isn't a Hebrew letter, digit, or known punctuation
+_ISOLATED_NOISE = re.compile(
+    r"(?<!\S)([|/\\~`^@#$%&*_=+<>\[\]{}]|\x27{2,})(?!\S)"
+)
+# Pure-noise line: only punctuation / digits / spaces, no Hebrew/Latin letters
+_NOISE_LINE = re.compile(r"^[\s\d|/\\~`^@#$%&*_=+<>\[\]{}.,;:\-–—'\"״׳]+$")
+
+
 def _clean_ocr_text(text: str) -> str:
     """
     Post-OCR cleanup for Hebrew government documents scanned with Tesseract.
@@ -217,6 +226,8 @@ def _clean_ocr_text(text: str) -> str:
     5. Double/triple-yod sequences → Hebrew gershayim ״ / geresh ׳
     6. Latin '' / ' inside Hebrew → ״ / ׳
     7. Numbers stuck directly to Hebrew letters (missing space)
+    8. Isolated noise characters (|/\\ etc.)
+    9. Pure-noise lines (no letters at all)
     """
     if not text:
         return text
@@ -233,6 +244,20 @@ def _clean_ocr_text(text: str) -> str:
     # 7. Separate numbers from Hebrew letters
     text = _NUM_STUCK.sub(r"\1 \2", text)
     text = _HEB_STUCK.sub(r"\1 \2", text)
+    # 8. Remove isolated noise chars
+    text = _ISOLATED_NOISE.sub(" ", text)
+    # 9. Drop pure-noise lines (lines with no letters at all)
+    lines = text.split("\n")
+    clean_lines = []
+    for line in lines:
+        stripped = line.strip()
+        # Keep the line if it has at least one letter (Hebrew or Latin)
+        if any(c.isalpha() for c in stripped):
+            clean_lines.append(stripped)
+        elif re.search(r"\d{3,}", stripped):
+            # Keep lines that are pure numbers if they look like codes/amounts
+            clean_lines.append(stripped)
+    text = "\n".join(clean_lines)
     # Collapse multiple spaces/blank lines
     text = re.sub(r"[ \t]{2,}", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
@@ -493,6 +518,94 @@ def run_ocr_with_positions(page_paths, lang_code="he-IL"):
     quality = _ocr_quality(page_texts, all_confidences, len(page_paths))
     print(f"  OCR: {found}/{len(page_paths)} עמודים עם טקסט, {total} שורות בסה\"כ")
     return page_texts, page_blocks, quality
+
+
+def _merge_ocr_lines_into_paragraphs(
+    page_blocks: dict,
+    line_gap_factor: float = 1.6,
+) -> dict:
+    """
+    Merge consecutive OCR text blocks on each page into paragraph-level blocks.
+
+    Two adjacent lines are merged into the same paragraph if:
+      vertical_gap < max(line1.height, line2.height) * line_gap_factor
+
+    This reduces tag-tree noise: instead of 9 separate <P> elements for one
+    paragraph, the tree gets a single <P> with the full paragraph text.
+
+    Returns a new dict[page_num → List[TextBlock]] with merged blocks.
+    Each merged block keeps: text (joined with space), bounding-box union,
+    first-line font_size/is_bold/page_num.
+    """
+    _sdir = os.path.dirname(os.path.abspath(__file__))
+    if _sdir not in sys.path:
+        sys.path.insert(0, _sdir)
+    try:
+        from pipeline.models import TextBlock as _TB
+    except ImportError:
+        return page_blocks   # can't merge without the model — pass through
+
+    merged: dict = {}
+
+    for pg_num, blocks in page_blocks.items():
+        if not blocks:
+            merged[pg_num] = []
+            continue
+
+        # blocks already sorted top-down from run_ocr_with_positions
+        groups: list = []
+        current: list = [blocks[0]]
+
+        for blk in blocks[1:]:
+            prev = current[-1]
+            # vertical gap between bottom of prev and top of current block
+            gap = blk.y - (prev.y + prev.height)
+            threshold = max(prev.height, blk.height) * line_gap_factor
+
+            # Also don't merge if horizontal extent differs drastically
+            # (possible column break or heading positioned differently)
+            prev_cx = prev.x + prev.width / 2
+            blk_cx  = blk.x + blk.width / 2
+            x_shift = abs(prev_cx - blk_cx)
+            page_width = max(b.x + b.width for b in blocks) or 600.0
+            col_break = x_shift > page_width * 0.35   # >35% page width apart
+
+            if gap < threshold and gap >= -(prev.height * 0.3) and not col_break:
+                current.append(blk)
+            else:
+                groups.append(current)
+                current = [blk]
+
+        if current:
+            groups.append(current)
+
+        # Build merged TextBlock per group
+        result = []
+        for grp in groups:
+            if len(grp) == 1:
+                result.append(grp[0])
+                continue
+            text = " ".join(b.text for b in grp)
+            x0   = min(b.x for b in grp)
+            y0   = min(b.y for b in grp)
+            x1   = max(b.x + b.width  for b in grp)
+            y1   = max(b.y + b.height for b in grp)
+            result.append(_TB(
+                text=text,
+                x=x0, y=y0,
+                width=x1 - x0, height=y1 - y0,
+                font_size=grp[0].font_size,
+                is_bold=grp[0].is_bold,
+                page_num=pg_num,
+            ))
+        merged[pg_num] = result
+
+    total_before = sum(len(v) for v in page_blocks.values())
+    total_after  = sum(len(v) for v in merged.values())
+    if total_before != total_after:
+        print(f"  מיזוג שורות OCR: {total_before} → {total_after} בלוקים "
+              f"(חיסכון {total_before - total_after} תגיות)")
+    return merged
 
 
 def build_image_pdf_with_mcids(page_paths, page_blocks_dict, output_path, stamp=False):
@@ -1080,14 +1193,45 @@ def build_image_pdf(page_paths, page_texts, output_path, stamp=False):
 
 
 def patch_stream(raw, fig_mcid, txt_mcid, page_w, page_h):
-    """Wrap the entire page content (image + invisible OCR) in a single Figure MCID.
+    """Wrap raster image in a Figure MCID (Artifact sub-type).
 
-    PDF/UA best practice for scanned documents: the whole page is one Figure.
-    - Figure carries Alt (AI description) and ActualText (OCR text).
-    - No split needed; no orphaned MCIDs; no P elements without content reference.
+    PDF/UA: the scanned page image is tagged as Figure; the OCR text layer
+    sits OUTSIDE the Figure BDC so it is real text (P), not image alt-text.
+    The OCR text was already added by build_image_pdf as a separate invisible
+    text layer — it lives after the image draw commands.
+
+    Structure of the patched stream:
+      /Figure <<MCID 0>> BDC
+        [image drawing commands — 'q … Do … Q']
+      EMC
+      [invisible OCR text — already tagged as /P <<MCID n>> by the caller]
     """
-    return (b"/Figure <</MCID " + str(fig_mcid).encode() + b">> BDC\n" +
-            raw.strip(b" \n") + b"\nEMC\n")
+    raw = raw.strip(b" \n")
+    # Split: find where image drawing ends and OCR text begins.
+    # build_image_pdf draws the image first; any BDC/EMC pairs for OCR text
+    # follow. We re-wrap only the image part as Figure.
+    # Heuristic: everything before the first BDC after the image 'Do' command
+    # belongs to the image; the rest is already tagged text.
+    split_pos = raw.rfind(b"Do\n")
+    if split_pos == -1:
+        split_pos = raw.rfind(b"Do ")
+    if split_pos != -1:
+        # Include the "Q" and any cleanup after Do
+        after_do = raw[split_pos + 3:]
+        q_pos = after_do.find(b"\n")
+        if q_pos != -1:
+            split_pos = split_pos + 3 + q_pos + 1
+        image_part = raw[:split_pos]
+        text_part  = raw[split_pos:]
+    else:
+        # Fallback: wrap entire stream as Figure (old behavior)
+        image_part = raw
+        text_part  = b""
+    return (
+        b"/Figure <</MCID " + str(fig_mcid).encode() + b">> BDC\n" +
+        image_part + b"\nEMC\n" +
+        text_part
+    )
 
 
 def add_bookmarks(pdf, pages, page_titles, page_texts):
@@ -1483,20 +1627,22 @@ def add_pdfua_tags(input_pdf, output_pdf, lang="he-IL", title="\u05de\u05e1\u05d
                 text_children = [make_elem("P", sect, actual_text=body_text, alt_text=body_text)]
             children.extend(text_children)
         else:
-            # WCAG 1.1.1 + PDF/UA: entire page = one Figure (MCID 0)
-            # Alt  = AI visual description (for screen readers without text extraction)
-            # ActualText = OCR text (for text extraction / copy-paste)
-            # All page content (image + invisible OCR) wrapped in one Figure MCID.
-            # This avoids P elements with no MCID that PAC rejects.
-            fig_alt = (ai_desc if ai_desc
-                       else (body_text[:300] if body_text else f"תמונת עמוד {pg_idx}"))
+            # Scanned PDF fallback path (pipeline import failed):
+            # Wrap the raster image in a Figure (MCID 0) — PDF/UA requires
+            # all page content to be tagged.  Alt = AI description or page num.
+            # OCR text is added below as a separate P element (Problem 1 fix:
+            # OCR text must NOT be inside Figure — it must be a real text element).
+            fig_alt = (ai_desc if ai_desc else f"עמוד {pg_idx} — תמונה סרוקה")
             fig = make_elem("Figure", sect,
                             title_text=f"עמוד {pg_idx}",
                             alt_text=fig_alt,
-                            actual_text=body_text if body_text else f"עמוד {pg_idx}",
                             page_obj=page_obj, mcid=FIG_MCID)
             parent_tree_map[pg_idx_0] = [fig]
             children.append(fig)
+            # OCR text (if any) → proper P element (not inside Figure)
+            if body_text and body_text.strip():
+                p_elem = make_elem("P", sect, actual_text=body_text.strip())
+                children.append(p_elem)
 
         for tbl_def in tables_info.get(str(pg_idx), tables_info.get(pg_idx, [])):
             summary = tbl_def.get("summary") or f"\u05d8\u05d1\u05dc\u05d4 \u05d1\u05e2\u05de\u05d5\u05d3 {pg_idx}"
@@ -1858,18 +2004,20 @@ def process_scanned_pdf(page_paths, output_pdf, lang="he-IL", title="מסמך נ
     all_blocks = [b for blks in page_blocks.values() for b in blks]
 
     if not all_blocks or not _ocr_quality_ok(ocr_quality):
-        if (ocr_quality.get('avg_confidence', 0) == 0.0
-                and ocr_quality.get('avg_chars_per_page', 0) == 0.0):
-            import logging
-            logging.warning("OCR quality gate: zero confidence and zero chars — continuing with empty text layer")
+        _conf  = ocr_quality.get('avg_confidence', 0)
+        _chars = ocr_quality.get('avg_chars_per_page', 0)
+        if _conf == 0.0 and _chars == 0.0:
+            print("  [OCR] אפס ביטחון ואפס תווים — ממשיך ללא שכבת טקסט")
             all_blocks = []
+        elif not all_blocks:
+            print("  [OCR] לא חולצו בלוקים — ממשיך ללא שכבת מבנה")
         else:
-            raise RuntimeError(
-                "OCR quality gate failed: "
-                f"confidence={ocr_quality.get('avg_confidence', 0):.2f}, "
-                f"bad_chars={ocr_quality.get('bad_char_ratio', 1):.2f}, "
-                f"gibberish={ocr_quality.get('gibberish_ratio', 1):.2f}, "
-                f"chars_per_page={ocr_quality.get('avg_chars_per_page', 0):.1f}"
+            # Quality below threshold but we have some text — warn and continue.
+            # Raising RuntimeError here causes a 500 error for users; better to
+            # produce a degraded-quality accessible PDF than to fail entirely.
+            print(
+                f"  [OCR] איכות נמוכה (ביטחון={_conf:.2f}, "
+                f"תווים/עמוד={_chars:.1f}) — ממשיך עם מבנה חלקי"
             )
 
     if not all_blocks:
@@ -1883,6 +2031,12 @@ def process_scanned_pdf(page_paths, output_pdf, lang="he-IL", title="מסמך נ
         except Exception:
             pass
         return
+
+    # ── 1b. Merge adjacent OCR lines into paragraph-level blocks ─────────
+    # Do this BEFORE classification+detection so the detector sees paragraphs,
+    # not individual 3-word OCR lines. MCIDs are assigned per merged block.
+    page_blocks = _merge_ocr_lines_into_paragraphs(page_blocks)
+    all_blocks  = [b for blks in page_blocks.values() for b in blks]
 
     # ── 2. Document type classification ───────────────────────────────────
     doc_type = DocumentClassifier().classify(all_blocks)

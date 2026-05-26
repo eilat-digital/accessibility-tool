@@ -949,6 +949,34 @@ def inject_scanned_semantic(
             if pk is not None:
                 sect_children.append(pk)
 
+        # Problem 3: pages with MCIDs but no matched elements get orphaned MCIDs.
+        # Add a P element for each unmatched MCID so the struct tree is complete.
+        if n_mcids > 0 and not sect_children:
+            # Page has OCR content but structure detection found nothing.
+            # Create one P per MCID using the OCR text directly.
+            for rec in mcid_records:
+                mcid_int, mcid_text = rec[0], rec[1]
+                if mcid_text.strip():
+                    pk = b.make_elem(
+                        "P", sect,
+                        actual_text=fix_rtl(mcid_text, source="ocr"),
+                        page_obj=page_obj,
+                        mcid=mcid_int,
+                    )
+                    sect_children.append(pk)
+
+        # Problem 2: ensure Figure elements used for the page image have a
+        # meaningful Alt, not raw garbled OCR.  Any Figure whose Alt is empty
+        # or too short gets a proper description.
+        for pk in sect_children:
+            try:
+                if str(pk.get("/S", "")) == "/Figure":
+                    alt = str(pk.get("/Alt", "")).strip("\"'")
+                    if len(alt) < 5:
+                        pk["/Alt"] = String(f"עמוד {pg_num} — תמונה סרוקה")
+            except Exception:
+                pass
+
         sect["/K"] = Array(sect_children) if sect_children else Array([])
         sect_elems.append(sect)
 
@@ -960,8 +988,26 @@ def inject_scanned_semantic(
         pt_array: List = []
         for mcid in range(n_mcids):
             owner = mcid_owners.get(mcid)
-            # Unmatched MCID → point to the page Sect (graceful fallback)
-            pt_array.append(owner if owner is not None else sect)
+            # Unmatched MCID → create a minimal P element so PAC has a valid owner
+            if owner is None:
+                mcid_text = next(
+                    (rec[1] for rec in mcid_records if rec[0] == mcid), ""
+                )
+                p_fallback = b.make_elem(
+                    "P", sect,
+                    actual_text=fix_rtl(mcid_text, source="ocr") if mcid_text else f"תוכן {mcid}",
+                    page_obj=page_obj,
+                    mcid=mcid,
+                )
+                sect_children.append(p_fallback)
+                owner = p_fallback
+                # Update sect /K with the new fallback element
+                existing_k = sect.get("/K")
+                if isinstance(existing_k, Array):
+                    existing_k.append(p_fallback)
+                else:
+                    sect["/K"] = Array([p_fallback])
+            pt_array.append(owner)
 
         parent_tree_nums.append(int(pg_idx))
         parent_tree_nums.append(pdf.make_indirect(Array(pt_array)))
