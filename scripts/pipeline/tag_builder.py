@@ -335,6 +335,36 @@ def _get_leaves(elements: List[StructElement]) -> List[StructElement]:
     return out
 
 
+def _get_matching_targets(elements: List[StructElement]) -> List[StructElement]:
+    """
+    Collect elements that should each receive a unique MCID assignment.
+
+    Differs from _get_leaves:
+    - TRs flagged with attrs["row_mcid_source"]=True are treated as atomic
+      matching units even though they have children (TD/TH).  Their children
+      will receive ActualText but NOT their own MCID binding.
+    - All other container elements are recursed through to their true leaves.
+
+    This ensures that one OCR line (one MCID) → one TR (one MCID owner),
+    not three TDs competing for the same MCID with wrong sequential fallbacks.
+    """
+    out: List[StructElement] = []
+
+    def _dfs(e: StructElement) -> None:
+        if e.attrs.get("row_mcid_source"):
+            # Treat this TR as a leaf for MCID matching purposes
+            out.append(e)
+        elif not e.children:
+            out.append(e)
+        else:
+            for c in e.children:
+                _dfs(c)
+
+    for e in elements:
+        _dfs(e)
+    return out
+
+
 def _assign_mcids(
     page_elems: List[StructElement],
     mcid_texts: List[Tuple[int, str]],
@@ -348,7 +378,9 @@ def _assign_mcids(
 
     Returns {id(leaf_elem): mcid}.
     """
-    leaf_elems = _get_leaves(page_elems)
+    # Use _get_matching_targets so that row_mcid_source TRs are treated as
+    # atomic units (one TR → one MCID) instead of recursing into their TDs.
+    leaf_elems = _get_matching_targets(page_elems)
     if not leaf_elems or not mcid_texts:
         return {}
 
@@ -356,24 +388,30 @@ def _assign_mcids(
     used_mcids: set = set()
     result: Dict[int, int] = {}
 
-    # Pass 1 — best text match
-    for leaf in leaf_elems:
+    # Split matching into two priority groups:
+    #   Group A — row_mcid_source TRs: carry the full original OCR line text
+    #             so their character-overlap score is very high (≈1.5).
+    #             Must run first so they don't lose MCIDs to shorter TH labels
+    #             that accidentally share common Hebrew letters (ו, י, ת, נ …).
+    #   Group B — regular leaves (TH, TD, P, H1 …): match with remaining MCIDs.
+    group_a = [e for e in leaf_elems if e.attrs.get("row_mcid_source")]
+    group_b = [e for e in leaf_elems if not e.attrs.get("row_mcid_source")]
+
+    def _best_match(leaf) -> None:
         leaf_norm = _normalize(_match_text(leaf))
         if not leaf_norm:
-            continue
+            return
         best_m: Optional[int] = None
-        best_score = 0
+        best_score = 0.0
         for m, mtext in norm_mcids:
             if m in used_mcids:
                 continue
-            # Overlap score: shared characters / max length (ignoring spaces)
             a = leaf_norm.replace(" ", "")
             b = mtext.replace(" ", "")
             if not a or not b:
                 continue
             overlap = len(set(a) & set(b))
             score   = overlap / max(len(set(a)), len(set(b)))
-            # Bonus if one contains the other
             if a in b or b in a:
                 score += 0.5
             if score > best_score:
@@ -383,7 +421,15 @@ def _assign_mcids(
             result[id(leaf)] = best_m
             used_mcids.add(best_m)
 
-    # Pass 2 — sequential fallback for unmatched leaves
+    # Pass 1a — row TRs get first pick
+    for leaf in group_a:
+        _best_match(leaf)
+
+    # Pass 1b — remaining leaves compete for leftover MCIDs
+    for leaf in group_b:
+        _best_match(leaf)
+
+    # Pass 2 — sequential fallback for anything still unmatched
     remaining_mcids = [m for m, _ in norm_mcids if m not in used_mcids]
     ri = 0
     for leaf in leaf_elems:
@@ -401,12 +447,31 @@ def _build_elem_with_mcid(
     page_obj,
     leaf_mcid_map: Dict[int, int],
 ) -> Optional[pikepdf.Dictionary]:
-    """Recursively build a pikepdf struct element tree, assigning MCIDs to leaves."""
+    """
+    Recursively build a pikepdf struct element tree, assigning MCIDs to leaves.
+
+    Special case — row_mcid_source TRs:
+      These are table rows whose full OCR text was matched to one MCID in
+      _assign_mcids().  The TR itself owns the MCID (/K contains the MCID int
+      AND the child TD/TH refs as a mixed array), and each TD/TH carries its
+      own /ActualText for column-level screen-reader navigation.  This
+      produces valid PDF/UA: one MCID per content-stream block, semantic
+      column breakdown via children, and a correct ParentTree entry.
+    """
     stype = se.elem_type if se.elem_type in _ALL_VALID else "P"
     text  = se.text.strip()
 
-    # Leaf: assign MCID if available
-    elem_mcid = leaf_mcid_map.get(id(se)) if not se.children else None
+    is_row_source = bool(se.attrs.get("row_mcid_source"))
+
+    # Determine MCID:
+    #   - Leaves always look up the map.
+    #   - row_mcid_source TRs also look up the map (they were added as
+    #     matching targets by _get_matching_targets).
+    #   - Regular containers have no direct MCID.
+    if not se.children or is_row_source:
+        elem_mcid = leaf_mcid_map.get(id(se))
+    else:
+        elem_mcid = None
 
     pk = b.make_elem(
         stype, parent_ref,
@@ -426,7 +491,16 @@ def _build_elem_with_mcid(
             if cr is not None:
                 child_refs.append(cr)
         if child_refs:
-            pk["/K"] = Array(child_refs)
+            if is_row_source and elem_mcid is not None:
+                # Mixed /K: the MCID integer first, then child struct elem refs.
+                # PDF spec §14.7.4 allows an array containing both integers
+                # (MCIDs) and indirect references to child StructElems.
+                # Acrobat reads the MCID to locate content; screen readers read
+                # ActualText on each TD for column navigation.
+                pk["/K"]  = Array([int(elem_mcid)] + child_refs)
+                pk["/Pg"] = page_obj   # must be present when K contains MCID
+            else:
+                pk["/K"] = Array(child_refs)
 
     return pk
 

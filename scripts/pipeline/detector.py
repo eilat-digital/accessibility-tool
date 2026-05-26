@@ -99,6 +99,9 @@ _ARNONA_CAPTION_RE = re.compile(
 # Column header row keywords
 _ARNONA_HEADER_KEYWORDS = {"סוג", "קוד", "תעריף", "בש", "שנתית", "למ"}
 
+# Optional leading section number in an arnona data row, e.g. "2.2.1" or "3"
+_ARNONA_SECTION_NUM_RE = re.compile(r"^(\d+(?:\.\d+)*)\s+(.+)", re.UNICODE)
+
 
 def _is_arnona_row(text: str) -> bool:
     """Return True if text matches the arnona rate-table row pattern."""
@@ -1278,52 +1281,64 @@ class StructureDetector:
                                     page_num=pg, source_bbox=cap_block.bbox)
                 table.add(cap)
 
-            # TH header row — either from an explicit header block or synthetic
-            hdr_block = table_data.get("header_block")
-            if hdr_block:
-                tr_h = StructElement("TR", page_num=pg)
-                # Parse the header row into column cells
-                hdr_text = hdr_block.text.strip()
-                # Synthetic column names for known arnona structure
-                for col_name in ["סוג נכס", "קוד", "תעריף שנתי 2021 בש\"ח למ\"ר"]:
-                    th = StructElement("TH", text=col_name, page_num=pg)
-                    th.attrs["Scope"] = "Col"
-                    tr_h.add(th)
-                table.add(tr_h)
-            else:
-                # Always emit synthetic header so table has TH
-                tr_h = StructElement("TR", page_num=pg)
-                for col_name in ["סוג נכס", "קוד", "תעריף שנתי 2021 בש\"ח למ\"ר"]:
-                    th = StructElement("TH", text=col_name, page_num=pg)
-                    th.attrs["Scope"] = "Col"
-                    tr_h.add(th)
-                table.add(tr_h)
+            # ── THead ─────────────────────────────────────────────────────
+            thead = StructElement("THead", page_num=pg)
+            tr_h  = StructElement("TR", page_num=pg)
+            for col_name in ["סעיף", 'תיאור נכס', "קוד", 'תעריף שנתי בש"ח למ"ר']:
+                th = StructElement("TH", text=col_name, page_num=pg)
+                th.attrs["Scope"] = "Col"
+                tr_h.add(th)
+            thead.add(tr_h)
+            table.add(thead)
 
-            # Data rows
+            # ── TBody — one TR per data row ────────────────────────────────
+            # Each TR is flagged `row_mcid_source=True` so that tag_builder's
+            # _assign_mcids() matches the full row text to one MCID and binds it
+            # to the TR (not to individual TD children).  TD children carry
+            # ActualText for column-level screen-reader navigation.
+            tbody = StructElement("TBody", page_num=pg)
+
             for row_block in table_data["data_rows"]:
                 row_text = row_block.text.strip()
-                # Parse: try to split into description, code, price
-                # Pattern: description ... code price
-                m = _ARNONA_ROW_RE.search(row_text)
+
+                # 1. Try to split off leading section number "2.2.1"
+                sec_num  = ""
+                rest     = row_text
+                sm = _ARNONA_SECTION_NUM_RE.match(row_text)
+                if sm:
+                    candidate_sec = sm.group(1)
+                    candidate_rest = sm.group(2).strip()
+                    # Only treat as section number if the rest still matches arnona
+                    if _ARNONA_ROW_RE.search(candidate_rest):
+                        sec_num = candidate_sec
+                        rest    = candidate_rest
+
+                # 2. Split rest into description / code / price
+                m = _ARNONA_ROW_RE.search(rest)
                 if m:
                     code  = m.group(1)
                     price = m.group(2)
-                    # Description = everything before the code
-                    desc = row_text[:m.start(1)].strip()
+                    desc  = rest[:m.start(1)].strip()
                 else:
-                    # Fallback: entire text as single TD
-                    desc, code, price = row_text, "", ""
+                    desc, code, price = rest, "", ""
 
                 tr = StructElement("TR", page_num=pg, source_bbox=row_block.bbox)
-                td_desc  = StructElement("TD", text=desc,  page_num=pg,
+                # Full original OCR text on TR for MCID matching in tag_builder
+                tr.attrs["original_text"]   = row_block.text
+                tr.attrs["row_mcid_source"] = True   # match MCID at TR level
+
+                td_sec   = StructElement("TD", text=sec_num, page_num=pg)
+                td_desc  = StructElement("TD", text=desc,    page_num=pg,
                                          source_bbox=row_block.bbox)
-                td_code  = StructElement("TD", text=code,  page_num=pg)
-                td_price = StructElement("TD", text=price, page_num=pg)
+                td_code  = StructElement("TD", text=code,    page_num=pg)
+                td_price = StructElement("TD", text=price,   page_num=pg)
+                tr.add(td_sec)
                 tr.add(td_desc)
                 tr.add(td_code)
                 tr.add(td_price)
-                table.add(tr)
+                tbody.add(tr)
 
+            table.add(tbody)
             return table
 
         if source == "keyvalue" and "rows_raw" in table_data:
