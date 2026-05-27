@@ -13,3 +13,5 @@ test_pac_check.pdf
 logs/
 tools/
 .claude/
+.firecrawl/
+tmp_runtime/
