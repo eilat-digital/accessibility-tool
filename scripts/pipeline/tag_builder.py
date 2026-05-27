@@ -49,18 +49,33 @@ _ALL_VALID = (
 
 def fix_rtl(text: str, source: str = "pdf") -> str:
     """
-    source="pdf"  — טקסט מ-pdfminer: מגיע בסדר ויזואלי → get_display ממיר ללוגי.
-    source="ocr"  — טקסט מ-Tesseract: כבר בסדר לוגי → ניקוי רווחים בלבד.
+    מכין טקסט עברית לשמירה ב-/ActualText.
+
+    נתיב "pdf"  (inject_digital):
+        pdfminer מחזיר טקסט בסדר לוגי Unicode — מנקים רווחים בלבד.
+
+    נתיב "ocr"  (inject_scanned):
+        OCR מחזיר טקסט בסדר לוגי (תוקן ב-run_ocr_with_positions) — מנקים רווחים בלבד.
+
+    get_display אסור כאן — screen readers מצפים לסדר לוגי ב-/ActualText.
     """
     if not text:
         return ""
-    text = re.sub(r"\s+", " ", text).strip()
-    if source == "pdf":
-        try:
-            return get_display(text)
-        except Exception:
-            pass
-    return text
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _pdf_string(text: str) -> pikepdf.String:
+    """
+    צור pikepdf.String עם BOM UTF-16 BE נכון.
+
+    pikepdf.String(str) מייצר מחרוזת PDF literal (þÿ...) שAcrobat Order pane
+    מציג כ-bytes גולמיים. במקום זאת, נספק bytes עם BOM מפורש — פורמט PDF hex
+    (<FEFF...>) שכל viewer מפענח נכון לעברית.
+    """
+    if not text:
+        return pikepdf.String("")
+    raw = b"\xfe\xff" + text.encode("utf-16-be")
+    return pikepdf.String(raw)
 
 
 # ============================================================
@@ -284,11 +299,11 @@ class _Builder:
         )
         d["/Lang"] = String(self.lang)
         if actual_text:
-            d["/ActualText"] = String(fix_rtl(actual_text, self.text_source))
+            d["/ActualText"] = _pdf_string(fix_rtl(actual_text, self.text_source))
         if alt:
-            d["/Alt"] = String(fix_rtl(alt, self.text_source))
+            d["/Alt"] = _pdf_string(fix_rtl(alt, self.text_source))
         if title:
-            d["/T"] = String(fix_rtl(title, self.text_source))
+            d["/T"] = _pdf_string(fix_rtl(title, self.text_source))
         if mcid is not None and page_obj is not None:
             d["/K"]  = int(mcid)
             d["/Pg"] = page_obj
@@ -515,7 +530,7 @@ def _build_elem_with_mcid(
             pg = getattr(se, "page_num", None)
             summary = (f"טבלת נתונים בעמוד {pg}" if pg
                        else "טבלת נתונים — ראה כותרת עמוד")
-        pk["/Summary"] = String(summary)
+        pk["/Summary"] = _pdf_string(summary)
 
     if se.children:
         child_refs = []
@@ -627,19 +642,15 @@ def _set_common_metadata(
         # scanned documents (depends on scan quality).  Flag for manual review
         # per IS 5568 §4.4 and WCAG 1.4.3.  Any downstream audit tool can read
         # this property to filter documents requiring manual contrast check.
-        try:
-            meta["x-accessibility:colorContrastVerified"] = "manual-check-required"
-            meta["x-accessibility:tool"] = "accessibility-tool — עיריית אילת"
-        except Exception:
-            pass
+        # custom namespace removed — causes XMP XML parse errors in veraPDF
 
     try:
         if "/Info" not in pdf.trailer:
             pdf.trailer["/Info"] = pdf.make_indirect(Dictionary())
         info = pdf.trailer["/Info"]
-        info["/Title"] = String(title or "מסמך נגיש")
+        info["/Title"] = _pdf_string(title or "מסמך נגיש")
         if author:
-            info["/Author"] = String(author)
+            info["/Author"] = _pdf_string(author)
         info["/Lang"] = String(lang)
         # Clear Producer so Acrobat's checker sees only the document tool
         try:
@@ -971,6 +982,13 @@ def inject_scanned_semantic(
         page_elems   = by_page.get(pg_num, [])
         mcid_records = page_mcid_records.get(pg_num, [])
 
+        # סדר קריאה RTL: מלמעלה למטה, ומימין לשמאל בכל שורה.
+        # bbox = (x0, y0_topdown, x1, y1_topdown) — y קטן = קרוב לראש הדף.
+        page_elems = sorted(
+            page_elems,
+            key=lambda e: (e.page_num, e.source_bbox[1] if e.source_bbox else 0, -(e.source_bbox[0] if e.source_bbox else 0)),
+        )
+
         # (mcid, text) pairs for matching
         mcid_texts = [(rec[0], rec[1]) for rec in mcid_records]
         n_mcids    = (max(rec[0] for rec in mcid_records) + 1) if mcid_records else 0
@@ -1001,7 +1019,7 @@ def inject_scanned_semantic(
                 if mcid_text.strip():
                     pk = b.make_elem(
                         "P", sect,
-                        actual_text=fix_rtl(mcid_text, source="ocr"),
+                        actual_text=fix_rtl(mcid_text, "ocr"),
                         page_obj=page_obj,
                         mcid=mcid_int,
                     )
@@ -1015,7 +1033,7 @@ def inject_scanned_semantic(
                 if str(pk.get("/S", "")) == "/Figure":
                     alt = str(pk.get("/Alt", "")).strip("\"'")
                     if len(alt) < 5:
-                        pk["/Alt"] = String(f"עמוד {pg_num} — תמונה סרוקה")
+                        pk["/Alt"] = _pdf_string(f"עמוד {pg_num} — תמונה סרוקה")
             except Exception:
                 pass
 
@@ -1083,7 +1101,7 @@ def build_bookmarks(
                 continue
             pg = max(1, elem.page_num)
             items.append(pdf.make_indirect(Dictionary(
-                Title=String(elem.text[:80] if elem.text else f"עמוד {pg}"),
+                Title=_pdf_string(elem.text[:80] if elem.text else f"עמוד {pg}"),
                 Dest=_dest(pg),
                 Count=int(0),
             )))
@@ -1092,7 +1110,7 @@ def build_bookmarks(
             txt = page_texts.get(i, "")
             label = txt.split("\n")[0].strip()[:60] if txt else f"עמוד {i}"
             items.append(pdf.make_indirect(Dictionary(
-                Title=String(label),
+                Title=_pdf_string(label),
                 Dest=_dest(i),
                 Count=int(0),
             )))

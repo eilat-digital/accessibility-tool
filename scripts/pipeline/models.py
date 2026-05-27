@@ -82,6 +82,10 @@ class StructElement:
     source_bbox: Optional[Tuple[float, float, float, float]] = None
     mcid: Optional[int] = None
 
+    @property
+    def bbox(self):
+        return self.source_bbox
+
     def add(self, child: StructElement) -> StructElement:
         self.children.append(child)
         return child

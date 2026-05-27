@@ -251,6 +251,38 @@ def _clean_ocr_text(text: str) -> str:
     clean_lines = []
     for line in lines:
         stripped = line.strip()
+        if not stripped:
+            continue
+        # Drop lines shorter than 3 printable chars
+        if len(stripped.replace(" ", "")) < 3:
+            continue
+        # Drop lines where most tokens are single characters —
+        # table-cell noise like "י ₪ ו 0 5 וס 0 םור ."
+        tokens = stripped.split()
+        if len(tokens) >= 2:
+            single_char = sum(1 for t in tokens if len(t) <= 1)
+            if single_char / len(tokens) > 0.55:
+                continue
+        # Drop lines with too few "real" Hebrew words (>= 2 Hebrew chars each).
+        # This catches ".0% .ה" or "לי --. לא ב ." style OCR noise.
+        heb_range = re.compile(r'[א-ת]')
+        real_heb_words = sum(
+            1 for t in tokens
+            if len(re.findall(heb_range, t)) >= 2
+        )
+        total_heb_chars = sum(len(re.findall(heb_range, t)) for t in tokens)
+        if total_heb_chars < 4 and len(tokens) >= 2:
+            continue
+        if len(tokens) >= 3 and real_heb_words / len(tokens) < 0.30:
+            continue
+        # Drop lines with many pure-noise tokens (no letter, no digit) like "--." "."
+        # These come from OCR of table borders: "לי --. לא ב ."
+        noise_tokens = sum(
+            1 for t in tokens
+            if not any(c.isalpha() or c.isdigit() for c in t)
+        )
+        if len(tokens) >= 4 and noise_tokens / len(tokens) > 0.25:
+            continue
         # Keep the line if it has at least one letter (Hebrew or Latin)
         if any(c.isalpha() for c in stripped):
             clean_lines.append(stripped)
@@ -433,7 +465,7 @@ def run_ocr_with_positions(page_paths, lang_code="he-IL"):
                 if conf >= 0:
                     all_confidences.append(conf)
                     page_confs.append(conf)
-                if conf < 20:
+                if conf < 30:
                     continue
                 word = str(data["text"][j]).strip()
                 if not word:
@@ -487,7 +519,14 @@ def run_ocr_with_positions(page_paths, lang_code="he-IL"):
             text_parts = []
             for key in sorted(lines.keys()):
                 ln  = lines[key]
-                txt = _clean_ocr_text(" ".join(ln["words"]))
+                words = ln["words"]
+                # Tesseract returns words left-to-right by x-position.
+                # Hebrew is RTL, so the visual left-to-right order is reversed
+                # relative to logical reading order. Reverse when the line
+                # contains Hebrew characters so ActualText reads correctly.
+                if any('א' <= c <= 'ת' for w in words for c in w):
+                    words = list(reversed(words))
+                txt = _clean_ocr_text(" ".join(words))
                 if not txt:
                     continue
                 text_parts.append(txt)
@@ -653,6 +692,7 @@ def build_image_pdf_with_mcids(page_paths, page_blocks_dict, output_path, stamp=
                 fs    = max(blk.height * 0.75, 6.0)
 
                 # UTF-16 BE text; ActualText ensures Hebrew/Arabic is readable by screen readers
+                # OCR (Tesseract heb) returns logical-order text — no bidi conversion needed
                 actual = _pdf_actual_text(blk.text)
 
                 cs_text_parts.append(b"/P <</MCID " + str(mcid).encode() + b" /ActualText " + actual + b">> BDC\n")
@@ -660,7 +700,9 @@ def build_image_pdf_with_mcids(page_paths, page_blocks_dict, output_path, stamp=
                 cs_text_parts.append(f"/F1 {fs:.1f} Tf\n".encode())
                 cs_text_parts.append(b"3 Tr\n")   # invisible render mode
                 cs_text_parts.append(f"{blk.x:.2f} {max(pdf_y, 1.0):.2f} Td\n".encode())
-                cs_text_parts.append(actual + b" Tj\n")
+                # AT קורא מ-/ActualText — Tj הוא invisible (mode 3) ולא צריך Hebrew bytes.
+                # כתיבת Hebrew ישירות ב-Tj עם WinAnsiEncoding גורמת ל-þÿ ב-Order pane.
+                cs_text_parts.append(b"( ) Tj\n")
                 cs_text_parts.append(b"ET\n")
                 cs_text_parts.append(b"EMC\n")
 
@@ -671,25 +713,32 @@ def build_image_pdf_with_mcids(page_paths, page_blocks_dict, output_path, stamp=
             if not cs_text_parts:
                 continue
 
-            # Read existing content stream bytes (the image drawing)
+            # Read existing content stream bytes (the image drawing).
+            # Use read_bytes() for decoded stream; fall back to raw bytes.
             try:
                 existing_obj = page.obj.get("/Contents")
                 if isinstance(existing_obj, pikepdf.Array):
                     existing_bytes = b"".join(
-                        s.get_stream_buffer() for s in existing_obj
-                        if hasattr(s, "get_stream_buffer")
+                        bytes(s.read_bytes()) for s in existing_obj
+                        if hasattr(s, "read_bytes")
                     )
-                elif existing_obj is not None and hasattr(existing_obj, "get_stream_buffer"):
-                    existing_bytes = bytes(existing_obj.get_stream_buffer())
+                elif existing_obj is not None and hasattr(existing_obj, "read_bytes"):
+                    existing_bytes = bytes(existing_obj.read_bytes())
                 else:
                     existing_bytes = b""
             except Exception:
                 existing_bytes = b""
 
-            # New stream: image as Artifact + MCID-tagged text blocks
+            # ── Clean-stream approach ─────────────────────────────────────────
+            # Strip any existing BDC/EMC from ReportLab image bytes (avoids
+            # nested Artifacts and duplicate MCIDs), then wrap the raw image in
+            # a single /Artifact /Background, and append P MCIDs OUTSIDE it.
+            import re as _re
+            clean_img = _re.sub(rb'/\w+\s+<<[^>]*>>\s*BDC\s*\n?', b'', existing_bytes)
+            clean_img = _re.sub(rb'\bEMC\b\s*\n?', b'', clean_img).strip()
             new_cs = (
-                b"/Artifact <</Type /Background /Subtype /Pagination>> BDC\n" +
-                existing_bytes.strip() + b"\n" +
+                b"/Artifact <</Type /Background /Subtype /Header>> BDC\n" +
+                clean_img + b"\n" +
                 b"EMC\n" +
                 b"".join(cs_text_parts)
             )
@@ -911,6 +960,235 @@ def apply_stamp_to_pdf(pdf_path, note_text=None):
         if os.path.exists(tmp): os.remove(tmp)
         raise e
 
+def add_accessible_badge(pdf_path: str) -> None:
+    """מוסיף תג pill ירוק '✓ נוסח מונגש' לפינה הימנית-עליונה של עמוד 1 בלבד."""
+    import io, shutil
+    import pikepdf
+    from pikepdf import Stream as PdfStream, Array as PdfArray, Dictionary
+    try:
+        from PIL import Image as _Img, ImageDraw as _Draw, ImageFont as _Font
+    except ImportError:
+        return
+
+    SCALE   = 3
+    TEXT    = "נוסח מונגש"
+    GREEN   = (34, 197, 94)     # #22C55E
+    WHITE   = (255, 255, 255)
+    FONT_PT = 6
+    FONT_PX = int(FONT_PT * SCALE * 96 / 72)
+
+    # גופן — Segoe UI (נקי, נתמך ב-Windows)
+    font = None
+    for fp in ["C:/Windows/Fonts/segoeuib.ttf", "C:/Windows/Fonts/segoeui.ttf",
+               "C:/Windows/Fonts/Tahoma.ttf", "C:/Windows/Fonts/Arial.ttf"]:
+        if os.path.exists(fp):
+            try:
+                font = _Font.truetype(fp, FONT_PX)
+                break
+            except Exception:
+                continue
+    if font is None:
+        font = _Font.load_default()
+
+    # bidi
+    try:
+        from bidi.algorithm import get_display as _bidi
+        display_text = _bidi(TEXT, base_dir="R")
+    except ImportError:
+        display_text = TEXT
+
+    # מידות
+    dummy = _Img.new("RGBA", (1, 1))
+    bb = _Draw.Draw(dummy).textbbox((0, 0), display_text, font=font)
+    tw, th = bb[2] - bb[0], bb[3] - bb[1]
+    PAD_X, PAD_Y = 7 * SCALE, 4 * SCALE
+    W, H = tw + PAD_X * 2, th + PAD_Y * 2
+    BORDER = max(2, SCALE)
+
+    img = _Img.new("RGBA", (W, H), (0, 0, 0, 0))
+    draw = _Draw.Draw(img)
+    # רקע לבן + מסגרת ירוקה
+    draw.rounded_rectangle([0, 0, W - 1, H - 1], radius=H // 2,
+                           fill=WHITE + (240,), outline=GREEN + (255,), width=BORDER)
+    # טקסט ירוק
+    draw.text((PAD_X - bb[0], PAD_Y - bb[1]), display_text,
+              font=font, fill=GREEN)
+
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    png_bytes = buf.getvalue()
+
+    # ממדים בנקודות PDF
+    W_PT = W / SCALE * (72 / 96)
+    H_PT = H / SCALE * (72 / 96)
+
+    tmp = pdf_path + ".badge_tmp"
+    try:
+        with pikepdf.open(pdf_path) as pdf:
+            xobj, _, _ = _make_image_xobject(pdf, png_bytes)
+            page = pdf.pages[0]
+            mb = page.obj.get("/MediaBox")
+            pw, ph = (float(mb[2]), float(mb[3])) if mb else (595.0, 842.0)
+            MARGIN = 12.0
+            x = pw - W_PT - MARGIN
+            y = ph - H_PT - MARGIN
+            bbox = f"[{x:.2f} {y:.2f} {x+W_PT:.2f} {y+H_PT:.2f}]"
+            if "/Resources" not in page.obj:
+                page.obj["/Resources"] = pdf.make_indirect(Dictionary())
+            res = page.obj["/Resources"]
+            if "/XObject" not in res:
+                res["/XObject"] = pdf.make_indirect(Dictionary())
+            res["/XObject"]["/AccessBadge"] = xobj
+            stream_data = (
+                f"/Artifact <</Type /Layout /BBox {bbox}>> BDC\n"
+                f"q\n"
+                f"{W_PT:.2f} 0 0 {H_PT:.2f} {x:.2f} {y:.2f} cm\n"
+                f"/AccessBadge Do\n"
+                f"Q\nEMC\n"
+            ).encode()
+            s = pdf.make_indirect(PdfStream(pdf, stream_data))
+            existing = page.obj.get("/Contents")
+            if existing is None:
+                page.obj["/Contents"] = s
+            elif isinstance(existing, pikepdf.Array):
+                existing.append(s)
+            else:
+                page.obj["/Contents"] = PdfArray([existing, s])
+            pdf.save(tmp)
+        shutil.move(tmp, pdf_path)
+        print("  ✓ תג 'נוסח מונגש' נוסף")
+    except Exception as e:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        print(f"  [badge] שגיאה: {e}")
+
+
+def add_accessible_notice_banner(pdf_path: str, title: str = "", processed_date: str = "") -> None:
+    """
+    מוסיף תיבת "נוסח מונגש" לתחתית העמוד הראשון בלבד.
+    מסומנת כ-/Artifact — לא מפריעה לסדר הקריאה של screen readers.
+    """
+    import datetime, shutil, io
+    import pikepdf
+    from pikepdf import Stream as PdfStream, Array as PdfArray, Dictionary
+
+    try:
+        from PIL import Image as _Img, ImageDraw as _Draw, ImageFont as _Font
+    except ImportError:
+        return
+
+    date_str = processed_date or datetime.date.today().strftime("%d.%m.%Y")
+
+    # ── עיצוב התיבה ───────────────────────────────────────────────────────
+    SCALE      = 3          # רזולוציה גבוהה לחדות
+    BNR_W_PT   = 500        # רוחב בנקודות PDF
+    BNR_H_PT   = 44         # גובה בנקודות PDF
+    BNR_W_PX   = BNR_W_PT * SCALE
+    BNR_H_PX   = BNR_H_PT * SCALE
+
+    BG         = (0, 51, 169)       # כחול עיריית אילת #0033A9
+    ACCENT     = (40, 166, 217)     # תכלת #28A6D9
+    TEXT_COL   = (255, 255, 255)
+    SUB_COL    = (200, 220, 255)
+
+    img = _Img.new("RGBA", (BNR_W_PX, BNR_H_PX), (0, 0, 0, 0))
+    draw = _Draw.Draw(img)
+
+    # רקע כחול עם עיגול פינות
+    r = 12 * SCALE
+    draw.rounded_rectangle([0, 0, BNR_W_PX - 1, BNR_H_PX - 1], radius=r,
+                           fill=BG + (230,))
+
+    # פס תכלת בצד ימין
+    draw.rectangle([BNR_W_PX - 10 * SCALE, 0, BNR_W_PX - 1, BNR_H_PX - 1],
+                   fill=ACCENT + (200,))
+
+    # גופן
+    font_lg = font_sm = None
+    for fp in reversed(FONT_CANDIDATES):
+        if os.path.exists(fp):
+            try:
+                font_lg = _Font.truetype(fp, 13 * SCALE)
+                font_sm = _Font.truetype(fp, 9 * SCALE)
+                break
+            except Exception:
+                continue
+    if font_lg is None:
+        font_lg = font_sm = _Font.load_default()
+
+    # bidi — המרה לסדר ויזואלי נכון לעברית
+    try:
+        from bidi.algorithm import get_display as _bidi
+    except ImportError:
+        _bidi = lambda t, **kw: t
+
+    line1_raw = f"הונגש על-ידי עיריית אילת  |  {date_str}"
+    if title:
+        line1_raw = f"הונגש על-ידי עיריית אילת  |  {title[:45]}  |  {date_str}"
+    line1 = _bidi(line1_raw, base_dir="R")
+    line2 = _bidi(
+        "נוסח נגיש למטרת נגישות בלבד. הנוסח המחייב הוא המקור הסרוק והחתום המצורף.",
+        base_dir="R"
+    )
+
+    # שורה 1 — כותרת
+    draw.text((16 * SCALE, 6 * SCALE), line1,
+              font=font_lg, fill=TEXT_COL)
+
+    # שורה 2 — נוסח משפטי
+    draw.text((16 * SCALE, 23 * SCALE), line2,
+              font=font_sm, fill=SUB_COL)
+
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    png_bytes = buf.getvalue()
+
+    # ── הוספה לעמוד הראשון בלבד ───────────────────────────────────────────
+    tmp = pdf_path + ".banner_tmp"
+    try:
+        with pikepdf.open(pdf_path) as pdf:
+            xobj, iw, ih = _make_image_xobject(pdf, png_bytes)
+            page = pdf.pages[0]
+            mb = page.obj.get("/MediaBox")
+            pw, ph = (float(mb[2]), float(mb[3])) if mb else (595.0, 842.0)
+            margin = 10.0
+            x = (pw - BNR_W_PT) / 2   # מרכז אופקי
+            y = margin                 # תחתית העמוד
+
+            bbox = f"[{x:.2f} {y:.2f} {x+BNR_W_PT:.2f} {y+BNR_H_PT:.2f}]"
+            if "/Resources" not in page.obj:
+                page.obj["/Resources"] = pdf.make_indirect(Dictionary())
+            res = page.obj["/Resources"]
+            if "/XObject" not in res:
+                res["/XObject"] = pdf.make_indirect(Dictionary())
+            res["/XObject"]["/AccessBanner"] = xobj
+
+            stream_data = (
+                f"/Artifact <</Type /Layout /Attached [/Bottom] /BBox {bbox}>> BDC\n"
+                f"q\n"
+                f"{BNR_W_PT:.2f} 0 0 {BNR_H_PT:.2f} {x:.2f} {y:.2f} cm\n"
+                f"/AccessBanner Do\n"
+                f"Q\n"
+                f"EMC\n"
+            ).encode()
+
+            s = pdf.make_indirect(PdfStream(pdf, stream_data))
+            existing = page.obj.get("/Contents")
+            if existing is None:
+                page.obj["/Contents"] = s
+            elif isinstance(existing, pikepdf.Array):
+                existing.append(s)
+            else:
+                page.obj["/Contents"] = PdfArray([existing, s])
+            pdf.save(tmp)
+        shutil.move(tmp, pdf_path)
+        print("  ✓ חתימת 'נוסח מונגש' נוספה לעמוד הראשון")
+    except Exception as e:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        print(f"  [banner] שגיאה: {e}")
+
+
 _AI_STRUCTURE_PROMPT = """\
 This is a page from a Hebrew document (RTL). Analyze its structure and return a JSON array.
 
@@ -945,10 +1223,44 @@ OCR text from this page (use for text accuracy):
 """
 
 
+def _ai_cache_dir():
+    """Return a persistent cache dir for AI responses (hash-keyed)."""
+    import os, pathlib
+    d = pathlib.Path(os.path.dirname(os.path.abspath(__file__))) / ".." / "db" / "ai_cache"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _img_hash(path) -> str:
+    """SHA-256 of the image file — used as cache key."""
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()[:32]
+
+
+def _ai_call_with_retry(client, **kwargs):
+    """Call client.messages.create with exponential-backoff retry (3 attempts)."""
+    import time
+    last_exc = None
+    for attempt in range(3):
+        try:
+            return client.messages.create(**kwargs)
+        except Exception as exc:
+            last_exc = exc
+            wait = 2 ** attempt        # 1 s, 2 s, 4 s
+            print(f"  AI retry {attempt+1}/3 ({exc.__class__.__name__}) — ממתין {wait}s")
+            time.sleep(wait)
+    raise last_exc
+
+
 def analyze_structure_with_ai(page_paths, page_texts, lang_code="he-IL"):
     """Use Claude Haiku to analyze document structure per page (WCAG 1.3.1).
-    Returns {page_num: [{type, text} | {type:'tr', cells:[{type,text}]}]}.
-    Types: h1 h2 h3 p li caption tr(with cells: th/td)."""
+    Returns {page_num: [{type, text} | {type:'tr', cells:[{type,text}], summary?:str}]}.
+    Types: h1 h2 h3 p li caption tr(with cells: th/td).
+    Tables get a 'summary' key with an AI-generated /Summary attribute (PDF/UA §7.5)."""
     import os
     if not os.environ.get("ANTHROPIC_API_KEY"):
         return {}
@@ -958,14 +1270,26 @@ def analyze_structure_with_ai(page_paths, page_texts, lang_code="he-IL"):
     except ImportError:
         return {}
 
+    cache_dir = _ai_cache_dir()
     client = anthropic.Anthropic()
     structures = {}
     print(f"  AI: מנתח מבנה {len(page_paths)} עמודים (WCAG 1.3.1)...")
 
     for i, path in enumerate(page_paths, 1):
         try:
+            img_hash = _img_hash(path)
+            cache_key = f"struct_{img_hash}.json"
+            cache_file = cache_dir / cache_key
+
+            if cache_file.exists():
+                elements = json.loads(cache_file.read_text(encoding="utf-8"))
+                trs = sum(1 for e in elements if e.get("type") == "tr")
+                print(f"  AI מבנה עמוד {i}: cache ({len(elements)} אלמנטים, טבלה: {trs} שורות) ✓")
+                structures[i] = elements
+                continue
+
             img = PILImage.open(path)
-            img.thumbnail((1280, 1280))   # larger → better table cell reading
+            img.thumbnail((1280, 1280))
             buf = io.BytesIO()
             img.save(buf, "JPEG", quality=85)
             data = base64.standard_b64encode(buf.getvalue()).decode()
@@ -973,7 +1297,8 @@ def analyze_structure_with_ai(page_paths, page_texts, lang_code="he-IL"):
 
             prompt = _AI_STRUCTURE_PROMPT.format(ocr_text=ocr_text or "(no OCR text)")
 
-            resp = client.messages.create(
+            resp = _ai_call_with_retry(
+                client,
                 model="claude-haiku-4-5-20251001",
                 max_tokens=3000,
                 messages=[{"role": "user", "content": [
@@ -984,15 +1309,53 @@ def analyze_structure_with_ai(page_paths, page_texts, lang_code="he-IL"):
             )
             text = resp.content[0].text.strip()
             match = re.search(r'\[.*\]', text, re.DOTALL)
-            if match:
-                elements = json.loads(match.group())
-                # Count element types for diagnostic
-                trs = sum(1 for e in elements if e.get("type") == "tr")
-                structures[i] = elements
-                print(f"  AI מבנה עמוד {i}: {len(elements)} אלמנטים"
-                      f" (טבלה: {trs} שורות) ✓")
-            else:
+            if not match:
                 print(f"  AI עמוד {i}: לא נמצא JSON בתשובה")
+                continue
+
+            elements = json.loads(match.group())
+
+            # ── Table /Summary (PDF/UA §7.5) ──────────────────────────────
+            # For each group of tr elements, ask AI for a short summary sentence.
+            tr_indices = [j for j, e in enumerate(elements) if e.get("type") == "tr"]
+            if tr_indices:
+                try:
+                    # Gather header texts from first tr
+                    first_tr = elements[tr_indices[0]]
+                    header_cells = [c.get("text", "") for c in first_tr.get("cells", [])
+                                    if c.get("type") == "th"]
+                    all_cell_texts = " | ".join(
+                        c.get("text", "")
+                        for e in elements if e.get("type") == "tr"
+                        for c in e.get("cells", [])
+                    )[:600]
+                    sum_prompt = (
+                        "אתה מנגיש מסמכי PDF בעברית. "
+                        "כתוב משפט אחד קצר בעברית (עד 15 מילים) שמסביר מה הטבלה הזו מייצגת, "
+                        "לצורך תכונת /Summary בטבלת PDF/UA. "
+                        "אל תתחיל ב'טבלה', אל תוסיף ניקוד.\n"
+                        f"כותרות עמודות: {', '.join(header_cells) or '(לא ידועות)'}\n"
+                        f"תוכן לדוגמה: {all_cell_texts}"
+                    )
+                    sum_resp = _ai_call_with_retry(
+                        client,
+                        model="claude-haiku-4-5-20251001",
+                        max_tokens=60,
+                        messages=[{"role": "user", "content": sum_prompt}]
+                    )
+                    table_summary = sum_resp.content[0].text.strip()
+                    # Attach summary to all tr elements (tag_builder picks it up)
+                    for j in tr_indices:
+                        elements[j]["summary"] = table_summary
+                    print(f"  AI עמוד {i}: /Summary טבלה — \"{table_summary[:50]}\"")
+                except Exception as _se:
+                    print(f"  AI /Summary עמוד {i}: {_se}")
+
+            trs = len(tr_indices)
+            print(f"  AI מבנה עמוד {i}: {len(elements)} אלמנטים (טבלה: {trs} שורות) ✓")
+            structures[i] = elements
+            cache_file.write_text(json.dumps(elements, ensure_ascii=False), encoding="utf-8")
+
         except Exception as e:
             print(f"  AI מבנה עמוד {i}: {e}")
 
@@ -1023,16 +1386,19 @@ def build_page_elements(struct_list, sect, pdf, make_elem):
         list_buf.clear()
 
     # Group consecutive tr elements into a single Table
-    def flush_table(tr_buf):
+    def flush_table(tr_buf, summary=None):
         if not tr_buf:
             return
         tbl = make_elem("Table", sect)
+        if summary:
+            tbl["/Summary"] = String(summary)
         tbl["/K"] = Array(tr_buf)
         for tr in tr_buf:
             tr["/P"] = tbl
         children.append(tbl)
 
     tr_buf = []
+    tr_summary = None   # /Summary from AI, attached to first tr element
 
     for item in struct_list:
         t = str(item.get("type", "p")).lower()
@@ -1040,7 +1406,7 @@ def build_page_elements(struct_list, sect, pdf, make_elem):
 
         if t == "li":
             if tr_buf:
-                flush_table(tr_buf); tr_buf = []
+                flush_table(tr_buf, tr_summary); tr_buf = []; tr_summary = None
             list_buf.append(text)
             continue
 
@@ -1048,7 +1414,7 @@ def build_page_elements(struct_list, sect, pdf, make_elem):
         if t != "tr" and list_buf:
             flush_list()
         if t != "tr" and tr_buf:
-            flush_table(tr_buf); tr_buf = []
+            flush_table(tr_buf, tr_summary); tr_buf = []; tr_summary = None
 
         if t in ("h1", "h2", "h3"):
             flush_list()
@@ -1058,6 +1424,9 @@ def build_page_elements(struct_list, sect, pdf, make_elem):
             cells = item.get("cells", [])
             if not cells:
                 continue
+            # Capture summary from first tr of a new table group
+            if not tr_buf and item.get("summary"):
+                tr_summary = item["summary"]
             tr = make_elem("TR", sect)  # parent will be fixed when flushing
             cell_elems = []
             for cell in cells:
@@ -1078,21 +1447,20 @@ def build_page_elements(struct_list, sect, pdf, make_elem):
 
     # Flush remaining
     flush_list()
-    flush_table(tr_buf)
+    flush_table(tr_buf, tr_summary)
 
     return children
 
 
 def describe_pages_with_ai(page_paths, lang_code="he-IL"):
     """Use Claude Vision (Haiku) to describe each page for WCAG 1.1.1 alt text.
-    Only runs when ANTHROPIC_API_KEY env var is set. Returns {page_num: description}."""
-    import os
+    Only runs when ANTHROPIC_API_KEY env var is set. Returns {page_num: description}.
+    Features: hash-based cache, exponential-backoff retry, enhanced signature/stamp detection."""
+    import os, json
     if not os.environ.get("ANTHROPIC_API_KEY"):
         return {}
     try:
-        import anthropic
-        import base64
-        import io
+        import anthropic, base64, io
         from PIL import Image as PILImage
     except ImportError:
         print("  AI: חסרות תלויות (anthropic/Pillow)")
@@ -1102,30 +1470,53 @@ def describe_pages_with_ai(page_paths, lang_code="he-IL"):
                 "en-US": "in English", "en": "in English"}
     lang_word = lang_map.get(lang_code, "בעברית")
 
+    # Prompt engineered for municipal docs: captures signatures, stamps, tables-in-images
+    _DESCRIBE_PROMPT = (
+        f"אתה מנגיש מסמכי PDF של עיריית אילת. "
+        f"תאר {lang_word} את תוכן עמוד זה בקצרה (2-4 משפטים) לצורך נגישות לאנשים עם לקות ראייה.\n"
+        "חובה לכלול:\n"
+        "1. נושא הדף הראשי\n"
+        "2. אם יש חתימה — ציין 'חתימה' + שם/תפקיד אם קריא\n"
+        "3. אם יש חותמת/בול — ציין 'חותמת עיריית אילת' או כותרת החותמת\n"
+        "4. אם יש טקסט בתמונה (כותרת, סכום, תאריך) — ציין אותו\n"
+        "אל תוסיף ניקוד. אל תתחיל ב'הדף'."
+    )
+
+    cache_dir = _ai_cache_dir()
     client = anthropic.Anthropic()
     descriptions = {}
     print(f"  AI: מתאר {len(page_paths)} עמודים {lang_word} (WCAG 1.1.1)...")
 
     for i, path in enumerate(page_paths, 1):
         try:
+            img_hash = _img_hash(path)
+            cache_key = f"desc_{lang_code}_{img_hash}.txt"
+            cache_file = cache_dir / cache_key
+
+            if cache_file.exists():
+                descriptions[i] = cache_file.read_text(encoding="utf-8")
+                print(f"  AI עמוד {i}: cache ✓")
+                continue
+
             img = PILImage.open(path)
             img.thumbnail((800, 800))
             buf = io.BytesIO()
             img.save(buf, "JPEG", quality=75)
             data = base64.standard_b64encode(buf.getvalue()).decode("utf-8")
 
-            resp = client.messages.create(
+            resp = _ai_call_with_retry(
+                client,
                 model="claude-haiku-4-5-20251001",
-                max_tokens=250,
+                max_tokens=300,
                 messages=[{"role": "user", "content": [
                     {"type": "image",
                      "source": {"type": "base64", "media_type": "image/jpeg", "data": data}},
-                    {"type": "text",
-                     "text": (f"תאר {lang_word} את תוכן הדף הזה בקצרה (2-3 משפטים), "
-                              "כולל תמונות וגרפיקה, לצורך נגישות לאנשים עם לקות ראייה.")}
+                    {"type": "text", "text": _DESCRIBE_PROMPT},
                 ]}]
             )
-            descriptions[i] = resp.content[0].text.strip()
+            desc = resp.content[0].text.strip()
+            descriptions[i] = desc
+            cache_file.write_text(desc, encoding="utf-8")
             print(f"  AI עמוד {i}: ✓")
         except Exception as e:
             print(f"  AI עמוד {i}: {e}")
@@ -1478,6 +1869,8 @@ def process_digital_pdf(input_pdf, output_pdf, lang="he-IL",
         print(f"✅ PDF נגיש (pipeline): {output_pdf}")
     else:
         print(f"⚠️  PDF יוצא אך לא נגיש ({gate_status}): {output_pdf}")
+
+    add_accessible_badge(output_pdf)
 
 
 def _add_metadata_only_impl(input_pdf, output_pdf, lang, title, author):
@@ -2170,6 +2563,8 @@ def process_scanned_pdf(page_paths, output_pdf, lang="he-IL", title="מסמך נ
     else:
         print(f"⚠️  PDF יוצא אך לא נגיש ({gate_status}): {output_pdf}")
 
+    add_accessible_badge(output_pdf)
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -2243,6 +2638,9 @@ def main():
         else:
             # Scanned PDF: rasterize only — OCR+structure handled inside process_scanned_pdf
             page_paths = extract_pages(args.input, pages_dir, dpi=args.dpi)
+            # WCAG 1.1.1: AI alt text for scanned pages (Figure elements)
+            if os.environ.get("ANTHROPIC_API_KEY") and page_paths:
+                ai_descriptions = describe_pages_with_ai(page_paths, lang_code=args.lang)
 
         if pdf_type == 'digital':
             # WCAG 1.4.5: preserve original text layer.

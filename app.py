@@ -101,6 +101,23 @@ TMP_RUNTIME_DIR = BASE_DIR / "tmp_runtime"
 for d in [UPLOAD_DIR, OUTPUT_DIR, BASE_DIR / "db", TMP_RUNTIME_DIR]:
     d.mkdir(parents=True, exist_ok=True)
 
+
+def _cleanup_stale_uploads(max_age_hours: int = 2) -> None:
+    """מוחק קבצים מ-uploads שגילם מעל max_age_hours (נשארים לאחר כישלון עיבוד)."""
+    import time
+    cutoff = time.time() - max_age_hours * 3600
+    removed = 0
+    for f in UPLOAD_DIR.iterdir():
+        if f.is_file() and f.stat().st_mtime < cutoff:
+            try:
+                f.unlink()
+                removed += 1
+            except Exception:
+                pass
+    if removed:
+        logger.info(f"startup cleanup: הוסרו {removed} קבצים עתיקים מ-uploads/")
+
+
 # -- DB --
 def get_db():
     conn = sqlite3.connect(DB_PATH)
@@ -151,6 +168,7 @@ def init_db():
     logger.info("Database initialized")
 
 init_db()
+_cleanup_stale_uploads()
 
 # -- Jobs dict for progress tracking --
 jobs = {}
@@ -360,7 +378,7 @@ def validate_pdf_accessibility(pdf_path):
         with pikepdf.open(pdf_path) as pdf:
             total_pages = len(pdf.pages)
 
-            # בדיקת טקסט — pdfminer מחלץ טקסט בפועל (לא רק קיום stream)
+            # בדיקת טקסט — pdfminer + fallback ל-ActualText ב-StructTree
             try:
                 from pdfminer.high_level import extract_text
                 sample_pages = list(range(min(3, total_pages)))
@@ -370,24 +388,41 @@ def validate_pdf_accessibility(pdf_path):
                 elif len(text_sample.strip()) > 5:
                     score_data['has_text_content'] = 15  # טקסט חלקי
             except Exception:
-                # fallback: בדוק אם יש אופרטורי טקסט ב-stream
-                for page in pdf.pages[:min(3, total_pages)]:
-                    try:
-                        raw_obj = page.obj.get('/Contents')
-                        if raw_obj is None:
-                            continue
-                        if hasattr(raw_obj, 'read_bytes'):
-                            raw = raw_obj.read_bytes()
-                        elif isinstance(raw_obj, pikepdf.Array):
-                            raw = b''.join(x.read_bytes() for x in raw_obj if hasattr(x, 'read_bytes'))
-                        else:
-                            raw = b''
-                        # אופרטורי טקסט ב-PDF: Tj, TJ, Tf
-                        if b'Tj' in raw or b'TJ' in raw:
-                            score_data['has_text_content'] = 35
-                            break
-                    except Exception:
-                        pass
+                pass
+
+            # אם pdfminer לא מצא טקסט — בדוק /ActualText ב-StructTree
+            # (מסמכים סרוקים משתמשים ב-( ) Tj + /ActualText, שpdfminer לא קורא)
+            if score_data['has_text_content'] == 0:
+                try:
+                    actual_text_chars = 0
+                    def _count_actual_text(obj, depth=0):
+                        nonlocal actual_text_chars
+                        if depth > 10:
+                            return
+                        try:
+                            if isinstance(obj, pikepdf.Array):
+                                for item in list(obj)[:20]:
+                                    _count_actual_text(item, depth + 1)
+                            elif isinstance(obj, (pikepdf.Dictionary, pikepdf.Stream)):
+                                at = obj.get('/ActualText')
+                                if at is not None:
+                                    actual_text_chars += max(0, len(str(at)) - 2)
+                                for key in ['/K', '/C']:
+                                    child = obj.get(key)
+                                    if child is not None:
+                                        _count_actual_text(child, depth + 1)
+                        except Exception:
+                            pass
+
+                    struct_root = pdf.Root.get('/StructTreeRoot')
+                    if struct_root is not None:
+                        _count_actual_text(struct_root)
+                    if actual_text_chars > 20:
+                        score_data['has_text_content'] = 35
+                    elif actual_text_chars > 5:
+                        score_data['has_text_content'] = 15
+                except Exception:
+                    pass
 
             # בדיקת תיוג מבנה PDF/UA
             if '/StructTreeRoot' in pdf.Root:
@@ -576,6 +611,32 @@ def process_pdf(job_id, input_path, output_path, original_name, file_size):
         validation_report = validate_pdf_accessibility(str(output_path))
         if validation_report is None:
             raise RuntimeError("בדיקת הנגישות לא החזירה תוצאה תקינה")
+
+        # PAC 2024 — external validator (optional, runs when PAC_PATH is set)
+        try:
+            sys.path.insert(0, str(BASE_DIR / "scripts"))
+            from pipeline.validator import run_pac_check
+            pac_result = run_pac_check(str(output_path))
+            if pac_result and pac_result.get("pac_available"):
+                validation_report["pac"] = {
+                    "passed":   pac_result["passed"],
+                    "errors":   pac_result["errors"],
+                    "warnings": pac_result["warnings"],
+                }
+                if not pac_result["passed"] and pac_result["errors"]:
+                    # PAC מצא שגיאות — הורד ציון ב-10 (מקסימום)
+                    validation_report["score"] = max(
+                        0, validation_report["score"] - 10
+                    )
+                    logger.warning(
+                        f"[job {job_id}] PAC failed: {pac_result['errors'][:3]}"
+                    )
+                else:
+                    logger.info(f"[job {job_id}] PAC passed")
+            else:
+                logger.debug(f"[job {job_id}] PAC לא מותקן — דילוג")
+        except Exception as _pac_err:
+            logger.debug(f"[job {job_id}] PAC integration error: {_pac_err}")
 
         # סיווג נגישות: full_accessible / basic_accessible_scanned / review_required
         validation_report['source_type'] = 'scanned' if is_scanned_source else 'digital'
@@ -992,13 +1053,79 @@ def validate(job_id):
     if not row:
         logger.warning(f"Document not found for validation: {job_id}")
         return jsonify({'error': 'מסמך לא נמצא'}), 404
-    
+
     if row['validation_report']:
         report = json.loads(row['validation_report'])
+        # תקן חוסר עקביות: אם accessibility_score שונה מהניקוד בדוח, עדכן את ה-DB
+        db_score = row['accessibility_score']
+        report_score = report.get('score')
+        if report_score is not None and db_score != report_score:
+            with get_db() as conn:
+                conn.execute(
+                    "UPDATE documents SET accessibility_score=? WHERE id=?",
+                    (report_score, job_id)
+                )
+                conn.commit()
     else:
         report = {'score': 0, 'status': 'pending', 'message': 'עדיין בעיבוד'}
-    
+
     return jsonify(report)
+
+@app.route('/api/pac/<job_id>')
+@login_required
+def run_pac_validation(job_id):
+    """הפעלת בדיקת PAC 2024 ידנית על מסמך מעובד"""
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT output_path, status FROM documents WHERE id=?", (job_id,)
+        ).fetchone()
+
+    if not row:
+        return jsonify({'error': 'לא נמצא'}), 404
+    if row['status'] != 'done':
+        return jsonify({'error': 'המסמך עדיין בעיבוד'}), 400
+
+    output_path = row['output_path']
+    if not output_path or not Path(output_path).exists():
+        return jsonify({'error': 'קובץ הפלט לא נמצא'}), 404
+
+    try:
+        from pipeline.validator import run_pac_check
+        result = run_pac_check(str(output_path))
+    except Exception as e:
+        logger.warning(f"[pac] שגיאה בבדיקת PAC: {e}")
+        result = None
+
+    if result is None or not result.get('pac_available'):
+        return jsonify({
+            'pac_available': False,
+            'message': 'PAC 2024 לא מותקן. הורד מ-https://pac.pdf-accessibility.org והגדר PAC_PATH ב-.env'
+        })
+
+    # Update validation_report in DB with PAC results
+    with get_db() as conn:
+        row2 = conn.execute(
+            "SELECT validation_report FROM documents WHERE id=?", (job_id,)
+        ).fetchone()
+        if row2 and row2['validation_report']:
+            try:
+                report = json.loads(row2['validation_report'])
+                report['pac'] = {
+                    'passed':   result['passed'],
+                    'errors':   result['errors'],
+                    'warnings': result['warnings'],
+                }
+                if not result['passed'] and result['errors']:
+                    report['score'] = max(0, report.get('score', 0) - 10)
+                conn.execute(
+                    "UPDATE documents SET validation_report=?, accessibility_score=? WHERE id=?",
+                    (json.dumps(report, ensure_ascii=False), report.get('score', 0), job_id)
+                )
+                conn.commit()
+            except Exception:
+                pass
+
+    return jsonify(result)
 
 @app.route('/api/stats')
 @login_required

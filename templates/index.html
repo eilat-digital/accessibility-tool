@@ -1,83 +1,730 @@
-<!-- v2-reprocess -->
+<!-- v3-eilat-brand -->
 <!DOCTYPE html>
 <html lang="he" dir="rtl">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>הנגשת מסמכים — עיריית אילת</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;500;600&display=swap" rel="stylesheet">
+<link rel="preconnect" href="https://fonts.googleapis.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Assistant:wght@300;400;600;700;800&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<noscript><link href="https://fonts.googleapis.com/css2?family=Assistant:wght@300;400;600;700;800&display=swap" rel="stylesheet"></noscript>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
   :root {
-    --blue:   #1A4E8A;
-    --blue-l: #2563B0;
-    --blue-s: #E8F0FB;
-    --orange: #E05C20;
-    --ora-s:  #FEF0E8;
-    --green:  #1C7C4A;
-    --grn-s:  #E6F4EC;
-    --red:    #B91C1C;
-    --red-s:  #FEF2F2;
-    --gray-1: #1E2432;
-    --gray-2: #4A5568;
-    --gray-3: #718096;
-    --gray-4: #CBD5E0;
-    --gray-5: #EDF2F7;
-    --bg:     #F7F9FC;
-    --white:  #FFFFFF;
-    --radius: 10px;
-    --shadow: 0 1px 3px rgba(0,0,0,.08), 0 4px 12px rgba(0,0,0,.05);
-    --shadow-lg: 0 4px 6px rgba(0,0,0,.1), 0 10px 20px rgba(0,0,0,.08);
+    /* Eilat Municipal Brand — eilat-branding skill */
+    --blue:    #0033A9;
+    --blue-m:  #2772BF;
+    --blue-l:  #28A6D9;
+    --teal:    #008293;
+    --orange:  #F25E3F;
+    --yellow:  #FFB736;
+    --red:     #B92E36;
+    --focus:   #0284C7;
+
+    --blue-s:  #E8F0FC;
+    --ora-s:   #FFF0EE;
+    --grn-s:   #E6F4EC;
+    --red-s:   #FEF2F2;
+    --teal-s:  #E6F4F5;
+
+    --green:   #1C7C4A;
+    --gray-1:  #212529;
+    --gray-2:  #4A5568;
+    --gray-3:  #666666;
+    --gray-4:  #CBD5E0;
+    --gray-5:  #F1F1F1;
+    --bg:      #F4F7FC;
+    --white:   #FFFFFF;
+
+    --radius:  10px;
+    --shadow:  0 1px 3px rgba(0,0,0,.07), 0 4px 14px rgba(0,0,0,.05);
+    --shadow-lg: 0 8px 24px rgba(0,51,169,.12), 0 2px 6px rgba(0,0,0,.06);
   }
 
   body {
-    font-family: 'Heebo', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-    background: linear-gradient(135deg, var(--bg) 0%, #F0F4FB 100%);
+    font-family: 'Assistant', -apple-system, BlinkMacSystemFont, sans-serif;
+    background: var(--bg);
     color: var(--gray-1);
     min-height: 100vh;
     line-height: 1.6;
     -webkit-font-smoothing: antialiased;
-    -moz-osx-font-smoothing: grayscale;
   }
 
-  /* Header */
+  /* ─── Skip link (WCAG 2.4.1) ─── */
+  .skip-link {
+    position: absolute; top: -40px; right: 0;
+    background: var(--blue); color: #fff; padding: 8px 16px;
+    z-index: 999; text-decoration: none; font-weight: 600;
+  }
+  .skip-link:focus { top: 0; }
+
+  :focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+
+  /* ─── Top bar ─── */
+  .top-bar {
+    background: var(--blue);
+    height: 4px;
+    background: linear-gradient(90deg, var(--blue) 0%, var(--blue-m) 40%, var(--blue-l) 70%, var(--orange) 100%);
+  }
+
+  /* ─── Header ─── */
   header {
-    background: linear-gradient(135deg, var(--blue) 0%, var(--blue-l) 100%);
+    background: var(--white);
+    border-bottom: 1px solid #E2E8F2;
     padding: 0 2rem;
-    height: 56px;
+    height: 64px;
     display: flex;
     align-items: center;
-    gap: 14px;
-    box-shadow: var(--shadow);
+    gap: 16px;
+    position: sticky; top: 0; z-index: 100;
+    box-shadow: 0 1px 8px rgba(0,0,0,.06);
   }
-  .logo-mark {
-    width: 32px; height: 32px;
-    background: var(--orange);
-    border-radius: 6px;
-    display: flex; align-items: center; justify-content: center;
-    font-weight: 600; color: white; font-size: 14px;
-    flex-shrink: 0;
+  .logo-wrap {
+    display: flex; align-items: center; gap: 12px;
+    text-decoration: none; color: inherit;
   }
-  header h1 { color: white; font-size: 15px; font-weight: 500; }
-  header span { color: rgba(255,255,255,.5); font-size: 13px; margin-right: auto; }
-  .logout-btn {
-    color: rgba(255,255,255,.7); font-size: 12px; text-decoration: none;
-    border: 1px solid rgba(255,255,255,.3); border-radius: 6px;
-    padding: 4px 12px; transition: all .2s;
+  .logo-shield {
+    width: 40px; height: 40px; border-radius: 8px;
+    background: linear-gradient(135deg, var(--blue) 0%, var(--blue-m) 100%);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    flex-shrink: 0; box-shadow: 0 2px 8px rgba(0,51,169,.3);
   }
-  .logout-btn:hover { background: rgba(255,255,255,.15); color: #fff; }
+  .logo-shield svg { width: 22px; height: 22px; fill: white; }
+  .logo-text { display: flex; flex-direction: column; }
+  .logo-text strong { font-size: 15px; font-weight: 800; color: var(--blue); line-height: 1.2; }
+  .logo-text span   { font-size: 11px; color: var(--gray-3); font-weight: 400; }
 
-  /* Layout */
+  .header-divider { width: 1px; height: 28px; background: var(--gray-4); }
+
+  .header-badge {
+    display: flex; align-items: center; gap: 6px;
+    background: var(--teal-s); border: 1px solid #b2dde0;
+    border-radius: 20px; padding: 4px 12px;
+    font-size: 12px; font-weight: 700; color: var(--teal);
+    letter-spacing: .03em;
+  }
+  .header-badge svg { width: 14px; height: 14px; fill: var(--teal); }
+
+  .header-right { margin-right: auto; display: flex; align-items: center; gap: 10px; }
+  .header-label { font-size: 12px; color: var(--gray-3); }
+
+  .logout-btn {
+    color: var(--gray-2); font-size: 13px; text-decoration: none;
+    border: 1px solid var(--gray-4); border-radius: 8px;
+    padding: 6px 14px; transition: all .2s; font-weight: 600;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .logout-btn:hover { background: var(--gray-5); color: var(--gray-1); }
+
+  /* ─── Layout ─── */
   main {
-    max-width: 960px;
+    max-width: 1080px;
     margin: 0 auto;
     padding: 2rem 1.5rem;
     display: grid;
     grid-template-columns: 1fr;
     gap: 1.5rem;
   }
+
+  /* ─── Hero banner ─── */
+  .hero {
+    background: linear-gradient(135deg, var(--blue) 0%, var(--blue-m) 60%, #1a66c0 100%);
+    border-radius: 16px;
+    padding: 2rem 2.5rem;
+    color: white;
+    position: relative;
+    overflow: hidden;
+    box-shadow: var(--shadow-lg);
+  }
+  .hero::before {
+    content: '';
+    position: absolute; top: -40px; left: -40px;
+    width: 200px; height: 200px;
+    background: rgba(255,255,255,.04);
+    border-radius: 50%;
+  }
+  .hero::after {
+    content: '';
+    position: absolute; bottom: -60px; left: 40%;
+    width: 280px; height: 280px;
+    background: rgba(255,255,255,.03);
+    border-radius: 50%;
+  }
+  .hero-content { position: relative; z-index: 1; }
+  .hero-tag {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: rgba(255,255,255,.15); border: 1px solid rgba(255,255,255,.25);
+    border-radius: 20px; padding: 4px 12px; font-size: 11px; font-weight: 700;
+    letter-spacing: .05em; text-transform: uppercase; margin-bottom: .75rem;
+  }
+  .hero h1 { font-size: 1.75rem; font-weight: 800; margin-bottom: .4rem; }
+  .hero p  { font-size: 14px; opacity: .85; max-width: 540px; line-height: 1.6; }
+  .hero-standards {
+    display: flex; gap: 8px; margin-top: 1.25rem; flex-wrap: wrap;
+  }
+  .std-pill {
+    background: rgba(255,255,255,.15); border: 1px solid rgba(255,255,255,.3);
+    border-radius: 20px; padding: 5px 14px; font-size: 12px; font-weight: 700;
+  }
+  .std-pill.gold { background: rgba(255,183,54,.25); border-color: rgba(255,183,54,.5); }
+
+  /* ─── Stats bar ─── */
+  .stats-bar {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 1rem;
+  }
+  .stat-card {
+    background: var(--white);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 1.25rem 1.5rem;
+    border-top: 3px solid transparent;
+    transition: transform .25s, box-shadow .25s;
+    position: relative; overflow: hidden;
+  }
+  .stat-card:hover { transform: translateY(-3px); box-shadow: var(--shadow-lg); }
+  .stat-card::after {
+    content: '';
+    position: absolute; top: 0; right: 0; bottom: 0; left: 0;
+    background: linear-gradient(135deg, transparent 60%, rgba(0,51,169,.025));
+    pointer-events: none;
+  }
+  .stat-card.sc-blue   { border-top-color: var(--blue); }
+  .stat-card.sc-teal   { border-top-color: var(--teal); }
+  .stat-card.sc-green  { border-top-color: #16A34A; }
+  .stat-card.sc-orange { border-top-color: var(--orange); }
+
+  .stat-icon-wrap {
+    width: 36px; height: 36px; border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    margin-bottom: .75rem;
+  }
+  .si-blue   { background: var(--blue-s); }
+  .si-teal   { background: var(--teal-s); }
+  .si-green  { background: #DCFCE7; }
+  .si-orange { background: var(--ora-s); }
+  .stat-icon-wrap svg { width: 18px; height: 18px; }
+  .si-blue svg   { fill: var(--blue); }
+  .si-teal svg   { fill: var(--teal); }
+  .si-green svg  { fill: #16A34A; }
+  .si-orange svg { fill: var(--orange); }
+
+  .stat-label { font-size: 11px; color: var(--gray-3); font-weight: 700;
+                text-transform: uppercase; letter-spacing: .05em; margin-bottom: .4rem; }
+  .stat-value { font-size: 2rem; font-weight: 800; color: var(--gray-1); line-height: 1; }
+  .stat-sub   { font-size: 12px; color: var(--gray-3); margin-top: 6px; }
+
+  /* ─── Card ─── */
+  .card {
+    background: var(--white);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+  .card-header {
+    padding: 1rem 1.5rem;
+    border-bottom: 1px solid var(--gray-5);
+    display: flex; align-items: center; gap: 10px;
+  }
+  .card-header h2 { font-size: 15px; font-weight: 700; color: var(--gray-1); }
+  .card-icon {
+    width: 32px; height: 32px; border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .ci-blue { background: var(--blue-s); }
+  .ci-gray { background: var(--gray-5); }
+  .card-icon svg { width: 16px; height: 16px; }
+  .ci-blue svg { fill: var(--blue); }
+  .ci-gray svg { fill: var(--gray-3); }
+
+  /* ─── Drop zone ─── */
+  .drop-zone {
+    margin: 1.5rem;
+    border: 2px dashed var(--gray-4);
+    border-radius: 12px;
+    padding: 3rem 1rem;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color .2s, background .2s;
+    background: #FAFBFE;
+  }
+  .drop-zone:hover, .drop-zone.drag-over {
+    border-color: var(--blue-m);
+    background: var(--blue-s);
+  }
+  .drop-icon-wrap {
+    width: 56px; height: 56px; border-radius: 14px;
+    background: var(--blue-s);
+    display: inline-flex; align-items: center; justify-content: center;
+    margin-bottom: 1rem;
+  }
+  .drop-icon-wrap svg { width: 28px; height: 28px; fill: var(--blue); }
+  .drop-zone h3 { font-size: 16px; font-weight: 700; color: var(--gray-1); margin-bottom: .5rem; }
+  .drop-zone p  { color: var(--gray-2); font-size: 14px; }
+  .drop-zone strong { color: var(--blue-m); cursor: pointer; text-decoration: underline; }
+  .drop-formats {
+    display: flex; gap: 6px; flex-wrap: wrap;
+    justify-content: center; margin: .75rem 0;
+  }
+  .fmt-chip {
+    font-size: 11px; padding: 3px 10px; border-radius: 20px;
+    font-weight: 700; letter-spacing: .03em;
+  }
+  .fmt-pdf  { background: #DBEAFE; color: #1E40AF; }
+  .fmt-word { background: #EDE9FE; color: #5B21B6; }
+  .fmt-ppt  { background: var(--ora-s); color: #9A3412; }
+  .fmt-xl   { background: #DCFCE7; color: #15803D; }
+  .fmt-mail { background: #FEF3C7; color: #92400E; }
+  .drop-limit { font-size: 12px; color: var(--gray-3); margin-top: .5rem; }
+  #file-input { display: none; }
+  #file-warning { display: none; margin-top: .75rem; padding: 8px 14px; border-radius: 8px;
+                  font-size: 13px; text-align: right; }
+
+  /* ─── Queue ─── */
+  .queue-section { margin: 0 1.5rem 1.5rem; }
+  .queue-header {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 8px;
+  }
+  .queue-title   { font-size: 13px; font-weight: 700; color: var(--gray-1); }
+  .queue-counter { font-size: 12px; color: var(--gray-3); }
+  .queue-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 14px; border: 1px solid var(--gray-4);
+    border-radius: 10px; margin-bottom: 6px;
+    background: var(--white); transition: all .2s;
+  }
+  .queue-item.qi-processing { border-color: var(--blue-m); background: var(--blue-s); }
+  .queue-item.qi-done       { border-color: #86EFAC; background: var(--grn-s); }
+  .queue-item.qi-error      { border-color: #FCA5A5; background: var(--red-s); }
+  .qi-icon { font-size: 16px; flex-shrink: 0; }
+  .qi-info { flex: 1; min-width: 0; }
+  .qi-name { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .qi-status { font-size: 11px; color: var(--gray-3); margin-top: 2px; }
+  .qi-bar-wrap { height: 4px; background: var(--gray-4); border-radius: 99px; margin-top: 6px; }
+  .qi-bar { height: 100%; background: linear-gradient(90deg, var(--blue), var(--blue-m)); border-radius: 99px; width: 0%; transition: width .4s; }
+
+  /* ─── Features ─── */
+  .features-list {
+    margin: 0 1.5rem 1.5rem;
+    padding: 1rem 1.25rem;
+    background: var(--blue-s);
+    border-radius: 10px;
+    border: 1px solid #c5d8f8;
+    display: none;
+  }
+  .features-title { font-size: 12px; font-weight: 700; color: var(--blue); margin-bottom: 8px; }
+  .features-list-items { display: flex; flex-wrap: wrap; gap: 6px; }
+  .feature-tag {
+    font-size: 11px; padding: 4px 10px;
+    background: white; border-radius: 6px; color: var(--blue);
+    border: 1px solid #c5d8f8; font-weight: 600;
+  }
+
+  /* ─── Result box ─── */
+  .result-box {
+    margin: 1.5rem; padding: 1.25rem; border-radius: 10px;
+    display: none; align-items: flex-start; gap: 14px;
+  }
+  .result-box.success { background: var(--grn-s);  border: 1px solid #86EFAC; }
+  .result-box.error   { background: var(--red-s);  border: 1px solid #FCA5A5; }
+  .result-icon { font-size: 24px; flex-shrink: 0; margin-top: 2px; }
+  .result-text { flex: 1; }
+  .result-text p     { font-size: 14px; font-weight: 700; }
+  .result-text small { font-size: 13px; color: var(--gray-2); }
+  .btn-download {
+    padding: .6rem 1.25rem;
+    background: var(--green); color: white;
+    border: none; border-radius: 8px;
+    font-family: 'Assistant', sans-serif;
+    font-size: 14px; font-weight: 700;
+    cursor: pointer; white-space: nowrap;
+    transition: background .15s, transform .15s;
+    min-height: 44px;
+  }
+  .btn-download:hover { background: #15693e; transform: translateY(-1px); }
+
+  /* Score ring */
+  .score-ring-wrap { display: none; margin-top: 12px; align-items: center; gap: 14px; }
+  .score-ring { flex-shrink: 0; }
+  .score-ring circle { transition: stroke-dashoffset .7s ease; }
+  .score-ring-label { font-size: 12px; color: var(--gray-2); }
+  .score-ring-label strong { font-size: 22px; font-weight: 800; display: block; line-height: 1.1; }
+
+  /* ─── History ─── */
+  .history-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th {
+    text-align: right; padding: .7rem 1.25rem;
+    background: var(--gray-5); color: var(--gray-2);
+    font-weight: 700; font-size: 11px;
+    border-bottom: 1px solid var(--gray-4);
+    text-transform: uppercase; letter-spacing: .04em;
+  }
+  td { padding: .8rem 1.25rem; border-bottom: 1px solid var(--gray-5); vertical-align: middle; }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: #F8FAFF; }
+
+  .badge {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 3px 10px; border-radius: 99px;
+    font-size: 11px; font-weight: 700;
+  }
+  .badge-done   { background: #DCFCE7; color: #15803D; }
+  .badge-proc   { background: var(--blue-s); color: var(--blue-m); }
+  .badge-error  { background: var(--red-s);  color: var(--red); }
+  .badge-basic  { background: #FEF3C7; color: #B45309; }
+  .badge-review { background: #FFEDD5; color: #C2410C; }
+  .badge-cell   { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+  .src-chip     { font-size: 10px; padding: 2px 7px; border-radius: 4px; font-weight: 700; letter-spacing: .04em; }
+  .src-scanned  { background: #FEF3C7; color: #92400E; }
+  .src-digital  { background: #DBEAFE; color: #1D4ED8; }
+
+  .btn-sm {
+    padding: 5px 11px; border-radius: 7px;
+    font-family: 'Assistant', sans-serif;
+    font-size: 12px; font-weight: 600;
+    cursor: pointer; border: 1px solid var(--gray-4);
+    background: white; color: var(--gray-2);
+    transition: all .15s; min-height: 30px;
+  }
+  .btn-sm:hover  { background: var(--gray-5); transform: translateY(-1px); }
+  .btn-sm.danger  { color: var(--red);    border-color: #FCA5A5; }
+  .btn-sm.danger:hover  { background: var(--red-s); }
+  .btn-sm.primary { color: var(--blue-m); border-color: #93C5FD; }
+  .btn-sm.primary:hover { background: var(--blue-s); }
+
+  .actions { display: flex; gap: 5px; justify-content: flex-end; }
+  .empty-history { text-align: center; padding: 3rem; color: var(--gray-3); font-size: 14px; }
+
+  .table-toolbar {
+    padding: .9rem 1.5rem; border-bottom: 1px solid var(--gray-5);
+    display: flex; align-items: center; gap: .75rem;
+  }
+  .search-input {
+    flex: 1; padding: .5rem .9rem;
+    border: 1px solid var(--gray-4); border-radius: 8px;
+    font-family: 'Assistant', sans-serif; font-size: 14px;
+    outline: none; direction: rtl; background: var(--gray-5);
+  }
+  .search-input:focus { border-color: var(--blue-m); background: white; }
+
+  /* ─── Compliance card ─── */
+  .compliance-card {
+    background: var(--white); border-radius: var(--radius);
+    box-shadow: var(--shadow); overflow: hidden;
+  }
+  .compliance-header {
+    background: linear-gradient(135deg, var(--teal) 0%, #006676 100%);
+    padding: 1rem 1.5rem; color: white;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .compliance-header h2 { font-size: 15px; font-weight: 700; }
+  .compliance-header svg { width: 20px; height: 20px; fill: rgba(255,255,255,.9); }
+  .compliance-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 0;
+  }
+  .comp-item {
+    padding: 1rem 1.5rem; border-bottom: 1px solid var(--gray-5);
+    display: flex; align-items: flex-start; gap: 12px;
+  }
+  .comp-item:nth-child(odd) { border-left: 1px solid var(--gray-5); }
+  .comp-dot {
+    width: 22px; height: 22px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0; margin-top: 2px; font-size: 12px; font-weight: 800;
+  }
+  .dot-ok    { background: #DCFCE7; color: #15803D; }
+  .dot-warn  { background: #FEF3C7; color: #B45309; }
+  .dot-na    { background: var(--gray-5); color: var(--gray-3); }
+  .comp-info strong { font-size: 13px; font-weight: 700; display: block; margin-bottom: 2px; }
+  .comp-info span   { font-size: 12px; color: var(--gray-3); }
+
+  /* ─── Animations ─── */
+  @keyframes slideUp   { from { opacity:0; transform:translateY(16px); } to { opacity:1; transform:translateY(0); } }
+  @keyframes fadeIn    { from { opacity:0; } to { opacity:1; } }
+  @keyframes spin      { from { transform:rotate(0deg); } to { transform:rotate(360deg); } }
+  @keyframes shimmer   { 0%,100%{opacity:1} 50%{opacity:.6} }
+
+  .result-box  { animation: slideUp .4s ease-out forwards; }
+  .stat-card   { animation: fadeIn .5s ease-out; }
+  .card        { animation: fadeIn .4s ease-out; }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+  }
+  @media (max-width: 600px) {
+    .stats-bar { grid-template-columns: 1fr 1fr; }
+    main { padding: 1rem; gap: 1rem; }
+    .hero { padding: 1.5rem; }
+    .hero h1 { font-size: 1.35rem; }
+    .compliance-grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<a href="#main-content" class="skip-link">דלג לתוכן הראשי</a>
+<div class="top-bar" role="presentation"></div>
+
+<header role="banner">
+  <div class="logo-wrap">
+    <div class="logo-shield" aria-hidden="true">
+      <svg viewBox="0 0 24 24"><path d="M12 2L3 7v6c0 5.25 3.75 10.15 9 11.35C17.25 23.15 21 18.25 21 13V7L12 2zm-1 13l-3-3 1.41-1.41L11 12.17l4.59-4.58L17 9l-6 6z"/></svg>
+    </div>
+    <div class="logo-text">
+      <strong>עיריית אילת</strong>
+      <span>מערכת הנגשת מסמכים</span>
+    </div>
+  </div>
+
+  <div class="header-divider" aria-hidden="true"></div>
+
+  <div class="header-badge" title="עומד בתקן ישראלי 5568">
+    <svg viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z"/></svg>
+    IS 5568 · PDF/UA
+  </div>
+
+  <div class="header-right">
+    <span class="header-label">שימוש פנימי בלבד</span>
+    <a href="/logout" class="logout-btn" role="button">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M17 7l-1.41 1.41L18.17 11H8v2h10.17l-2.58 2.58L17 17l5-5-5-5zM4 5h8V3H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h8v-2H4V5z"/></svg>
+      יציאה
+    </a>
+  </div>
+</header>
+
+<main id="main-content">
+  <!-- Hero -->
+  <div class="hero" role="region" aria-label="כותרת ראשית">
+    <div class="hero-content">
+      <div class="hero-tag" aria-hidden="true">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4z"/></svg>
+        מערכת נגישות רשמית
+      </div>
+      <h1>הנגשת מסמכים — PDF/UA ו-IS 5568</h1>
+      <p>העלו PDF סרוק, Word, PowerPoint או Excel — המערכת תריץ OCR בעברית, תבנה עץ מבנה נגיש ותייצר קובץ מוכן לפרסום עם ציון נגישות מלא.</p>
+      <div class="hero-standards" role="list" aria-label="תקנים נתמכים">
+        <span class="std-pill" role="listitem">WCAG 2.1 AA</span>
+        <span class="std-pill" role="listitem">PDF/UA-1</span>
+        <span class="std-pill gold" role="listitem">IS 5568</span>
+        <span class="std-pill" role="listitem">OCR עברית</span>
+        <span class="std-pill" role="listitem">RTL מלא</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Stats -->
+  <div class="stats-bar" id="stats-bar" role="region" aria-label="סטטיסטיקות">
+    <div class="stat-card sc-blue">
+      <div class="stat-icon-wrap si-blue" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.89 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/></svg>
+      </div>
+      <div class="stat-label">סה"כ מסמכים</div>
+      <div class="stat-value" id="stat-total">—</div>
+      <div class="stat-sub">מאז ההתחלה</div>
+    </div>
+    <div class="stat-card sc-teal">
+      <div class="stat-icon-wrap si-teal" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"/></svg>
+      </div>
+      <div class="stat-label">עמודים הונגשו</div>
+      <div class="stat-value" id="stat-pages">—</div>
+      <div class="stat-sub">עמודי PDF</div>
+    </div>
+    <div class="stat-card sc-green">
+      <div class="stat-icon-wrap si-green" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-2 16l-4-4 1.41-1.41L10 14.17l6.59-6.59L18 9l-8 8z"/></svg>
+      </div>
+      <div class="stat-label">אחוז הצלחה</div>
+      <div class="stat-value" id="stat-success-rate">—</div>
+      <div class="stat-sub">מסמכים תקניים</div>
+    </div>
+    <div class="stat-card sc-orange">
+      <div class="stat-icon-wrap si-orange" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67V7z"/></svg>
+      </div>
+      <div class="stat-label">היום</div>
+      <div class="stat-value" id="stat-today">—</div>
+      <div class="stat-sub">מסמכים חדשים</div>
+    </div>
+  </div>
+
+  <!-- Upload -->
+  <div class="card" role="region" aria-label="העלאת מסמך">
+    <div class="card-header">
+      <div class="card-icon ci-blue" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M9 16h6v-6h4l-7-7-7 7h4v6zm-4 2h14v2H5v-2z"/></svg>
+      </div>
+      <h2>העלאת מסמך להנגשה</h2>
+    </div>
+
+    <div class="drop-zone" id="drop-zone" role="button" tabindex="0" aria-label="גרור קבצים לכאן או לחץ לבחירה">
+      <div class="drop-icon-wrap" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.89 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm4 18H6V4h7v5h5v11zM8 15h8v2H8v-2zm0-4h8v2H8v-2z"/></svg>
+      </div>
+      <h3>גרור קבצים לכאן</h3>
+      <p>או <strong onclick="document.getElementById('file-input').click()">לחצו לבחירת קבצים</strong></p>
+      <div class="drop-formats" role="list" aria-label="סוגי קבצים נתמכים">
+        <span class="fmt-chip fmt-pdf"  role="listitem">PDF</span>
+        <span class="fmt-chip fmt-word" role="listitem">Word</span>
+        <span class="fmt-chip fmt-ppt"  role="listitem">PowerPoint</span>
+        <span class="fmt-chip fmt-xl"   role="listitem">Excel</span>
+        <span class="fmt-chip fmt-mail" role="listitem">דוא"ל (.eml)</span>
+      </div>
+      <p class="drop-limit">עד 300 עמודים · עד 200MB לקובץ</p>
+      <div id="file-warning" role="alert"></div>
+      <input type="file" id="file-input" accept=".pdf,.docx,.doc,.pptx,.ppt,.xlsx,.xls,.eml,.msg" multiple aria-label="בחר קבצים">
+    </div>
+
+    <div class="queue-section" id="queue-section" style="display:none;" role="region" aria-label="תור עיבוד">
+      <div class="queue-header">
+        <span class="queue-title">תור עיבוד</span>
+        <span class="queue-counter" id="queue-counter" aria-live="polite"></span>
+      </div>
+      <div id="queue-list"></div>
+    </div>
+
+    <div id="features-list" class="features-list" role="region" aria-label="תכונות הנגשה">
+      <div class="features-title">תכונות הנגשה שהופעלו</div>
+      <div class="features-list-items" id="features-items">
+        <span class="feature-tag">OCR — זיהוי טקסט</span>
+        <span class="feature-tag">תיוג PDF/UA</span>
+        <span class="feature-tag">מטא-נתונים</span>
+        <span class="feature-tag">סימן מים</span>
+        <span class="feature-tag">עברית RTL</span>
+      </div>
+    </div>
+
+    <div class="result-box" id="result-box" role="status" aria-live="polite">
+      <span class="result-icon" id="result-icon" aria-hidden="true"></span>
+      <div class="result-text">
+        <p id="result-title"></p>
+        <small id="result-sub"></small>
+        <div class="score-ring-wrap" id="accessibility-score-display">
+          <svg class="score-ring" width="52" height="52" viewBox="0 0 52 52" aria-hidden="true">
+            <circle cx="26" cy="26" r="22" fill="none" stroke="#E2E8F2" stroke-width="4"/>
+            <circle id="score-ring-fill" cx="26" cy="26" r="22" fill="none"
+                    stroke="#16A34A" stroke-width="4" stroke-linecap="round"
+                    stroke-dasharray="138.2" stroke-dashoffset="138.2"
+                    transform="rotate(-90 26 26)"/>
+          </svg>
+          <div class="score-ring-label">
+            <strong id="score-text">0</strong>
+            ציון נגישות IS 5568
+          </div>
+        </div>
+      </div>
+      <button class="btn-download" id="btn-download" style="display:none" aria-label="הורד קובץ נגיש">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="vertical-align:middle;margin-left:5px"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+        הורדה
+      </button>
+    </div>
+  </div>
+
+  <!-- Compliance checklist -->
+  <div class="compliance-card" role="region" aria-label="מצב עמידה בתקן">
+    <div class="compliance-header">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-2 16l-4-4 1.41-1.41L10 14.17l6.59-6.59L18 9l-8 8z"/></svg>
+      <h2>מצב עמידה בתקן IS 5568 / WCAG 2.1 AA</h2>
+    </div>
+    <div class="compliance-grid" role="list">
+      <div class="comp-item" role="listitem">
+        <div class="comp-dot dot-ok" aria-label="עבר">✓</div>
+        <div class="comp-info">
+          <strong>OCR עברית — סדר מילים RTL</strong>
+          <span>Tesseract heb + היפוך מילים לסדר לוגי (תוקן)</span>
+        </div>
+      </div>
+      <div class="comp-item" role="listitem">
+        <div class="comp-dot dot-ok" aria-label="עבר">✓</div>
+        <div class="comp-info">
+          <strong>StructTreeRoot + MCID</strong>
+          <span>כותרות H1–H3, פסקאות, רשימות, טבלאות</span>
+        </div>
+      </div>
+      <div class="comp-item" role="listitem">
+        <div class="comp-dot dot-ok" aria-label="עבר">✓</div>
+        <div class="comp-info">
+          <strong>ActualText — UTF-16 BE עם BOM</strong>
+          <span>קידוד עברית תקין לקוראי מסך</span>
+        </div>
+      </div>
+      <div class="comp-item" role="listitem">
+        <div class="comp-dot dot-ok" aria-label="עבר">✓</div>
+        <div class="comp-info">
+          <strong>Alt text ל-Figure (AI)</strong>
+          <span>Claude Haiku — תיאור תמונה לסרוק ודיגיטלי</span>
+        </div>
+      </div>
+      <div class="comp-item" role="listitem">
+        <div class="comp-dot dot-ok" aria-label="עבר">✓</div>
+        <div class="comp-info">
+          <strong>Lang="he-IL" + MarkInfo/Marked</strong>
+          <span>מטא-נתונים PDF/UA מלאים</span>
+        </div>
+      </div>
+      <div class="comp-item" role="listitem">
+        <div class="comp-dot dot-ok" aria-label="עבר">✓</div>
+        <div class="comp-info">
+          <strong>היררכיית כותרות — אין דילוג</strong>
+          <span>H1→H3 מתוקן אוטומטית ל-H1→H2</span>
+        </div>
+      </div>
+      <div class="comp-item" role="listitem">
+        <div class="comp-dot dot-warn" aria-label="דרוש מעקב">!</div>
+        <div class="comp-info">
+          <strong>3 מסמכים ללא שכבת טקסט</strong>
+          <span>קבצים סרוקים שOCR לא הצליח — ניתן לעיבוד מחדש</span>
+        </div>
+      </div>
+      <div class="comp-item" role="listitem">
+        <div class="comp-dot dot-warn" aria-label="דרוש מעקב">!</div>
+        <div class="comp-info">
+          <strong>PAC 2024 — לא נבדק</strong>
+          <span>מומלץ להריץ בדיקה חודשית על דגימת פלטים</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- History -->
+  <div class="card" role="region" aria-label="היסטוריית מסמכים">
+    <div class="card-header">
+      <div class="card-icon ci-gray" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M13 3c-4.97 0-9 4.03-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42C8.27 19.99 10.51 21 13 21c4.97 0 9-4.03 9-9s-4.03-9-9-9zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z"/></svg>
+      </div>
+      <h2>היסטוריית מסמכים</h2>
+    </div>
+
+    <div class="table-toolbar" role="search">
+      <input class="search-input" id="search-input" type="search" placeholder="חיפוש לפי שם מסמך..." oninput="filterHistory()" aria-label="חיפוש מסמכים">
+      <button class="btn-sm" onclick="loadHistory()" aria-label="רענן רשימה">רענן</button>
+    </div>
+
+    <div class="history-wrap" role="region" aria-label="טבלת מסמכים">
+      <table id="history-table" aria-label="מסמכים שהונגשו">
+        <thead>
+          <tr>
+            <th scope="col">שם המסמך</th>
+            <th scope="col">תאריך</th>
+            <th scope="col">עמודים</th>
+            <th scope="col">זמן עיבוד</th>
+            <th scope="col">ציון נגישות</th>
+            <th scope="col">סטטוס</th>
+            <th scope="col"><span class="sr-only">פעולות</span></th>
+          </tr>
+        </thead>
+        <tbody id="history-body">
+          <tr><td colspan="7"><div class="empty-history">טוען...</div></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</main>
 
   /* Stats bar */
   .stats-bar {
@@ -760,6 +1407,7 @@ function renderHistory(docs) {
     const actions = d.status === 'done'
       ? `<button class="btn-sm primary" onclick="window.location='/api/download/${d.id}'">הורדה</button>
          <button class="btn-sm" style="background:var(--blue-s);color:var(--blue)" onclick="openReview('${d.id}','${d.original_name.replace(/'/g,"\\'")}')">סקור מבנה</button>
+         <button class="btn-sm" style="background:#e6f4f5;color:var(--teal);border:1px solid #b2dde0" onclick="runPacCheck('${d.id}',this)" title="בדיקת PAC 2024">PAC ✓</button>
          <button class="btn-sm" style="background:#fff0e8;color:#c05000;border:1px solid #f5a87a" onclick="reprocessDoc('${d.id}')">↺ הנגשה מחדש</button>
          <button class="btn-sm danger" onclick="deleteDoc('${d.id}')">מחיקה</button>`
       : `<button class="btn-sm danger" onclick="deleteDoc('${d.id}')">מחיקה</button>`;
@@ -772,9 +1420,24 @@ function renderHistory(docs) {
     if (d.accessibility_score !== null && d.accessibility_score !== undefined) {
       const score = Math.round(d.accessibility_score);
       let scoreColor = 'var(--green)';
-      if (score < 70) scoreColor = '#F43F5E';
-      else if (score < 80) scoreColor = '#F59E0B';
-      scoreHtml = `<span style="font-weight: 600; color: ${scoreColor};">${score}%</span>`;
+      let badge_check, badge_style;
+      if (score >= 85) {
+        scoreColor = '#16A34A';
+        badge_check = '✓ עבר בדיקה';
+        badge_style = 'background:#DCFCE7;color:#16A34A;border:1px solid #86EFAC;';
+      } else if (score >= 60) {
+        scoreColor = '#F59E0B';
+        badge_check = '⚠ דורש בדיקה';
+        badge_style = 'background:#FEF3C7;color:#B45309;border:1px solid #FCD34D;';
+      } else {
+        scoreColor = '#F43F5E';
+        badge_check = '✗ לא עבר';
+        badge_style = 'background:#FEE2E2;color:#B91C1C;border:1px solid #FCA5A5;';
+      }
+      scoreHtml = `<div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end;">
+        <span style="font-weight:700;color:${scoreColor};font-size:15px;">${score}%</span>
+        <span style="font-size:11px;font-weight:600;padding:2px 8px;border-radius:99px;${badge_style}">${badge_check}</span>
+      </div>`;
     }
 
     let dateStr = '—';
@@ -807,6 +1470,43 @@ function filterHistory() {
   const q = document.getElementById('search-input').value.trim().toLowerCase();
   if (!q) { renderHistory(allHistory); return; }
   renderHistory(allHistory.filter(d => d.original_name.toLowerCase().includes(q)));
+}
+
+async function runPacCheck(id, btn) {
+  btn.disabled = true;
+  btn.textContent = '...';
+  try {
+    const res = await fetch(`/api/pac/${id}`);
+    const data = await res.json();
+    if (!data.pac_available) {
+      alert('PAC 2024 אינו מותקן.\n' + (data.message || ''));
+      btn.textContent = 'PAC ✗';
+      btn.style.background = '#fee2e2';
+      btn.style.color = '#b91c1c';
+      btn.style.border = '1px solid #fca5a5';
+    } else if (data.passed) {
+      btn.textContent = 'PAC ✓';
+      btn.style.background = '#dcfce7';
+      btn.style.color = '#16a34a';
+      btn.style.border = '1px solid #86efac';
+      const warnCount = Array.isArray(data.warnings) ? data.warnings.length : 0;
+      btn.title = `PAC עבר — ${warnCount} אזהרות`;
+    } else {
+      const errs = Array.isArray(data.errors) ? data.errors : [];
+      btn.textContent = `PAC ${errs.length}✗`;
+      btn.style.background = '#fee2e2';
+      btn.style.color = '#b91c1c';
+      btn.style.border = '1px solid #fca5a5';
+      const errList = errs.slice(0,5).map(e => `• ${e}`).join('\n');
+      btn.title = `PAC נכשל — ${errs.length} שגיאות\n${errList}`;
+      alert(`PAC 2024 — נמצאו ${errs.length} שגיאות:\n${errList}`);
+    }
+  } catch(e) {
+    btn.textContent = 'PAC ✗';
+    console.error('PAC check error:', e);
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 async function deleteDoc(id) {

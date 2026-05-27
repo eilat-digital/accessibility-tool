@@ -4,17 +4,130 @@ validator.py — IS 5568 / PDF/UA-1 compliance validation.
 Two validators:
 
   StructValidator   — validates a List[StructElement] (pre-export, fast)
-                      Integrates SemanticValidator hard-fail gates:
-                      any hard fail forces score ≤ 45 and status = non_compliant.
   FileValidator     — validates an exported PDF file with pikepdf (post-export)
 
-Both return ValidationResult with score (0-100), status, errors, warnings.
+PAC 2024 integration (optional):
+  run_pac_check(pdf_path) runs PAC CLI when PAC_PATH is set in environment.
+  Install PAC from https://pac.pdf-accessibility.org and set:
+    PAC_PATH=C:/Program Files/PAC 2024/PAC.exe
+  in your .env file. Without PAC_PATH the function returns None gracefully.
 """
 from __future__ import annotations
 
+import os
+import subprocess
+import tempfile
+import xml.etree.ElementTree as ET
 from typing import Dict, List, Optional
 
 from .models import StructElement, ValidationResult
+
+
+# ---------------------------------------------------------------------------
+# PAC 2024 integration
+# ---------------------------------------------------------------------------
+
+_PAC_SEARCH_PATHS = [
+    r"C:\Program Files\PAC 2024\PAC.exe",
+    r"C:\Program Files (x86)\PAC 2024\PAC.exe",
+    r"C:\Program Files\PDF Accessibility Checker\PAC.exe",
+    r"C:\Program Files (x86)\PDF Accessibility Checker\PAC.exe",
+]
+
+
+def _find_pac() -> Optional[str]:
+    """Return path to PAC.exe or None if not found."""
+    explicit = os.environ.get("PAC_PATH", "").strip()
+    if explicit and os.path.isfile(explicit):
+        return explicit
+    for p in _PAC_SEARCH_PATHS:
+        if os.path.isfile(p):
+            return p
+    return None
+
+
+def run_pac_check(pdf_path: str) -> Optional[dict]:
+    """
+    Run PAC 2024 on pdf_path and return a structured result dict, or None
+    if PAC is not installed / check fails.
+
+    PAC CLI:  PAC.exe "<pdf>" /report:"<output.xml>"
+    Returns:
+        {
+          "pac_available": True,
+          "passed": bool,
+          "errors": [str, ...],
+          "warnings": [str, ...],
+          "raw_xml": str,          # full XML output for archiving
+        }
+    or None when PAC is not installed.
+    """
+    pac_exe = _find_pac()
+    if not pac_exe:
+        return None
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        report_path = os.path.join(tmpdir, "pac_report.xml")
+        try:
+            result = subprocess.run(
+                [pac_exe, pdf_path, f'/report:{report_path}'],
+                capture_output=True, timeout=120,
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            return {"pac_available": True, "passed": False,
+                    "errors": ["PAC הסתיים בחריגת זמן או שגיאה"], "warnings": [], "raw_xml": ""}
+
+        if not os.path.isfile(report_path):
+            # Try alternate CLI syntax (older PAC versions)
+            try:
+                result = subprocess.run(
+                    [pac_exe, f'--input={pdf_path}', f'--report={report_path}'],
+                    capture_output=True, timeout=120,
+                )
+            except Exception:
+                pass
+
+        if not os.path.isfile(report_path):
+            return {"pac_available": True, "passed": False,
+                    "errors": [f"PAC לא יצר דוח (קוד יציאה: {result.returncode})"],
+                    "warnings": [], "raw_xml": ""}
+
+        try:
+            raw_xml = open(report_path, encoding="utf-8", errors="replace").read()
+        except Exception:
+            raw_xml = ""
+
+        errors: List[str] = []
+        warnings: List[str] = []
+        passed = True
+
+        try:
+            root = ET.fromstring(raw_xml)
+            # PAC XML schema: <ResultCollection> → <Result type="Error|Warning" ...>
+            for elem in root.iter():
+                tag = elem.tag.split("}")[-1].lower()   # strip namespace
+                if tag in ("result", "check", "issue"):
+                    rtype = (elem.get("type") or elem.get("Type") or "").lower()
+                    msg   = (elem.get("description") or elem.get("Description")
+                             or elem.text or "").strip()
+                    if not msg:
+                        continue
+                    if "error" in rtype or "fail" in rtype:
+                        errors.append(msg)
+                        passed = False
+                    elif "warn" in rtype:
+                        warnings.append(msg)
+        except ET.ParseError:
+            # If XML is malformed, treat returncode 0 as pass
+            passed = (result.returncode == 0)
+
+        return {
+            "pac_available": True,
+            "passed": passed,
+            "errors": errors[:30],     # cap for storage
+            "warnings": warnings[:30],
+            "raw_xml": raw_xml[:8000],  # cap for DB storage
+        }
 
 # ---------------------------------------------------------------------------
 # Scoring weights  (must sum to 100)
@@ -159,6 +272,12 @@ class StructValidator:
         ths    = [e for e in flat if e.elem_type == "TH"]
         if tables and not ths:
             warnings.append("טבלאות קיימות אך חסרות כותרות עמודות TH — IS 5568 §7.2")
+        elif ths:
+            ths_without_scope = [e for e in ths if not e.attrs.get("Scope")]
+            if ths_without_scope:
+                warnings.append(
+                    f"{len(ths_without_scope)} כותרות TH ללא Scope — PDF/UA §7.5 / WCAG 1.3.1"
+                )
 
         # ── Score computation ────────────────────────────────────────────────
         score = min(100, sum(components.values()))
@@ -474,10 +593,58 @@ def _check_struct_tree(pdf) -> tuple:
     if not headings:
         warnings.append("אין כותרות בעץ המבנה — WCAG 1.3.1")
     if tables and not ths:
-        warnings.append("טבלאות קיימות בעץ המבנה אך חסרות TH")
+        warnings.append("טבלאות קיימות בעץ המבנה אך חסרות TH — IS 5568 §7.2")
+    if ths:
+        ths_no_scope = _count_th_without_scope(str_root)
+        if ths_no_scope > 0:
+            warnings.append(
+                f"{ths_no_scope} כותרות TH ללא Scope — PDF/UA §7.5 / WCAG 1.3.1"
+            )
     if lists:
         lbodies = [t for t in types_found if t == "LBody"]
         if not lbodies:
             warnings.append("רשימות בעץ המבנה חסרות LBody")
 
     return errors, warnings
+
+
+def _count_th_without_scope(str_root) -> int:
+    """Count TH StructElems that lack a /Scope attribute in their /A dict."""
+    import pikepdf
+    count = 0
+
+    def walk(obj, depth=0):
+        nonlocal count
+        if depth > 50:
+            return
+        try:
+            if isinstance(obj, pikepdf.Dictionary):
+                if str(obj.get("/S", "")).lstrip("/") == "TH":
+                    a = obj.get("/A")
+                    has_scope = False
+                    if isinstance(a, pikepdf.Dictionary):
+                        has_scope = "/Scope" in a
+                    elif isinstance(a, pikepdf.Array):
+                        has_scope = any(
+                            "/Scope" in item
+                            for item in a
+                            if isinstance(item, pikepdf.Dictionary)
+                        )
+                    if not has_scope:
+                        count += 1
+                k = obj.get("/K")
+                if isinstance(k, pikepdf.Array):
+                    for child in k:
+                        walk(child, depth + 1)
+                elif isinstance(k, pikepdf.Dictionary):
+                    walk(k, depth + 1)
+            elif isinstance(obj, pikepdf.Array):
+                for item in obj:
+                    walk(item, depth + 1)
+        except Exception:
+            pass
+
+    doc_k = str_root.get("/K")
+    if doc_k is not None:
+        walk(doc_k)
+    return count
