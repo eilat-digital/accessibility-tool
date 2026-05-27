@@ -200,7 +200,13 @@ ALLOWED_EXTENSIONS = {
 def convert_to_pdf(input_path: Path, work_dir: Path) -> Path:
     """המרת Word/PowerPoint/אימייל ל-PDF באמצעות LibreOffice headless."""
     import shutil
-    lo = shutil.which('libreoffice') or shutil.which('soffice')
+    lo = (shutil.which('libreoffice') or shutil.which('soffice') or
+          next((p for p in [
+              r'C:\Program Files\LibreOffice\program\soffice.exe',
+              r'C:\Program Files (x86)\LibreOffice\program\soffice.exe',
+              '/usr/bin/libreoffice', '/usr/bin/soffice',
+              '/Applications/LibreOffice.app/Contents/MacOS/soffice',
+          ] if os.path.exists(p)), None))
     if not lo:
         raise Exception('LibreOffice אינו מותקן — לא ניתן להמיר את הקובץ')
     result = subprocess.run(
@@ -336,7 +342,13 @@ def convert_email_to_pdf(input_path: Path, work_dir: Path) -> Path:
     html_path = work_dir / (input_path.stem + '_email.html')
     html_path.write_text(html_content, encoding='utf-8')
 
-    lo = shutil.which('libreoffice') or shutil.which('soffice')
+    lo = (shutil.which('libreoffice') or shutil.which('soffice') or
+          next((p for p in [
+              r'C:\Program Files\LibreOffice\program\soffice.exe',
+              r'C:\Program Files (x86)\LibreOffice\program\soffice.exe',
+              '/usr/bin/libreoffice', '/usr/bin/soffice',
+              '/Applications/LibreOffice.app/Contents/MacOS/soffice',
+          ] if os.path.exists(p)), None))
     if not lo:
         raise Exception('LibreOffice אינו מותקן — לא ניתן להמיר את האימייל')
 
