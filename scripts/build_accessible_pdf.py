@@ -170,6 +170,21 @@ _LATIN_IN_HEBREW = re.compile(
 _DOUBLE_YOD = re.compile(r"([א-ת])יי([א-ת\s]|$)")
 # Triple-yod (e.g. "עפייי" → "עפ"י"): consonant + ייי
 _TRIPLE_YOD = re.compile(r"([א-ת])ייי([א-ת\s]|$)")
+# Words where יי is a legitimate part of the word (NOT a gershayim artifact).
+# These will be restored after gershayim substitution.
+_YY_WHITELIST = {
+    "עיריית", "עירייה", "עיריה", "עיייה",
+    "ריית", "רייה",
+    "חייב", "חייבת", "חייבים", "חייבות",
+    "חיים", "מחיים",
+    "ייתכן", "ייתכנו", "ייתכנות",
+    "מיים", "מייצג", "מייצגת", "מייצגים",
+    "מייסד", "מייסדת", "מייסדים",
+    "מייעד", "מייעצת", "מייעץ",
+    "מיידי", "מיידית", "מייד",
+    "בייסבול", "וויים", "חיית", "היית", "היייתי",
+    "ריי", "שיים",
+}
 # Latin double-apostrophe → Hebrew gershayim ״
 _LATIN_QUOTES = re.compile(r"''|\"\"")
 # Latin single apostrophe inside Hebrew word → Hebrew geresh ׳
@@ -195,9 +210,25 @@ def _fix_hebrew_gershayim(text: str) -> str:
       ''     → ״      (Latin double-apostrophe → gershayim)
       word'  → word׳  (Latin apostrophe after Hebrew → geresh)
     """
-    # Triple-yod first (more specific), then double-yod
-    text = _TRIPLE_YOD.sub(lambda m: m.group(1) + '״' + 'י' + m.group(2), text)
-    text = _DOUBLE_YOD.sub(lambda m: m.group(1) + '״' + m.group(2), text)
+    # Triple-yod first (more specific), then double-yod.
+    # Skip substitution when the full token is a whitelisted legitimate word.
+    def _yod_sub_double(m):
+        full_word = m.group(0)
+        # Check if this match is part of a whitelisted word
+        for w in _YY_WHITELIST:
+            if w in m.string[max(0, m.start()-2):m.end()+2]:
+                return full_word
+        return m.group(1) + '״' + m.group(2)
+
+    def _yod_sub_triple(m):
+        full_word = m.group(0)
+        for w in _YY_WHITELIST:
+            if w in m.string[max(0, m.start()-2):m.end()+2]:
+                return full_word
+        return m.group(1) + '״' + 'י' + m.group(2)
+
+    text = _TRIPLE_YOD.sub(_yod_sub_triple, text)
+    text = _DOUBLE_YOD.sub(_yod_sub_double, text)
     # Latin double-apostrophe → ״
     text = text.replace("''", "״")
     # Latin single apostrophe after Hebrew consonant → ׳
