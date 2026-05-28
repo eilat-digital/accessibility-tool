@@ -726,6 +726,7 @@
   </div>
 </main>
 
+<style>
   /* Stats bar */
   .stats-bar {
     display: grid;
@@ -1045,138 +1046,6 @@
     main { padding: 1rem; }
   }
 </style>
-</head>
-<body>
-
-<header>
-  <div class="logo-mark">נג</div>
-  <h1>מערכת הנגשת מסמכים</h1>
-  <span>עיריית אילת — שימוש פנימי</span>
-  <a href="/logout" class="logout-btn">יציאה</a>
-</header>
-
-<main>
-  <!-- Stats -->
-  <div class="stats-bar" id="stats-bar">
-    <div class="stat-card">
-      <div class="stat-icon">📚</div>
-      <div class="stat-label">סה"כ מסמכים</div>
-      <div class="stat-value" id="stat-total">—</div>
-      <div class="stat-sub">מאז ההתחלה</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-icon">📄</div>
-      <div class="stat-label">עמודים הונגשו</div>
-      <div class="stat-value" id="stat-pages">—</div>
-      <div class="stat-sub">עמודי PDF</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-icon">✓</div>
-      <div class="stat-label">הצלחה</div>
-      <div class="stat-value" id="stat-success-rate">—</div>
-      <div class="stat-sub">אחוז הצלחה</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-icon">⚡</div>
-      <div class="stat-label">היום</div>
-      <div class="stat-value" id="stat-today">—</div>
-      <div class="stat-sub">מסמכים חדשים</div>
-    </div>
-  </div>
-
-  <!-- Upload -->
-  <div class="card">
-    <div class="card-header">
-      <div class="card-icon icon-blue">📄</div>
-      <h2>העלאת מסמך להנגשה</h2>
-    </div>
-
-    <div class="drop-zone" id="drop-zone">
-      <div class="drop-icon">📂</div>
-      <p><strong onclick="document.getElementById('file-input').click()">לחצו לבחירת קבצים</strong> או גררו לכאן</p>
-      <div style="display:flex; gap:6px; flex-wrap:wrap; justify-content:center; margin: 8px 0;">
-        <span style="background:#E8F0FB; color:#1A4E8A; font-size:11px; padding:3px 8px; border-radius:4px; font-weight:600;">PDF</span>
-        <span style="background:#E8F0FB; color:#1A4E8A; font-size:11px; padding:3px 8px; border-radius:4px; font-weight:600;">Word (.docx)</span>
-        <span style="background:#E8F0FB; color:#1A4E8A; font-size:11px; padding:3px 8px; border-radius:4px; font-weight:600;">PowerPoint (.pptx)</span>
-        <span style="background:#E8F0FB; color:#1A4E8A; font-size:11px; padding:3px 8px; border-radius:4px; font-weight:600;">Excel (.xlsx)</span>
-        <span style="background:#FFF0E8; color:#B45309; font-size:11px; padding:3px 8px; border-radius:4px; font-weight:600;">דוא"ל (.eml/.msg)</span>
-      </div>
-      <small style="color:var(--gray-3)">עד 300 עמודים · עד 200MB</small>
-      <div id="file-warning" style="display:none; margin-top:10px; padding:8px 12px; border-radius:6px; font-size:12px; text-align:right;"></div>
-      <input type="file" id="file-input" accept=".pdf,.docx,.doc,.pptx,.ppt,.xlsx,.xls,.eml,.msg" multiple>
-    </div>
-
-    <!-- Queue -->
-    <div class="queue-section" id="queue-section" style="display:none;">
-      <div class="queue-header">
-        <span class="queue-title">תור עיבוד</span>
-        <span class="queue-counter" id="queue-counter"></span>
-      </div>
-      <div id="queue-list"></div>
-    </div>
-
-    <div id="features-list" class="features-list">
-      <div class="features-title">✨ תכונות הנגשה שהופעלו:</div>
-      <div class="features-list-items" id="features-items">
-        <span class="feature-tag">OCR - זיהוי טקסט</span>
-        <span class="feature-tag">תיוג PDF/UA</span>
-        <span class="feature-tag">מטא-נתונים</span>
-        <span class="feature-tag">סימן מים</span>
-        <span class="feature-tag">עברית RTL</span>
-      </div>
-    </div>
-
-    <div class="result-box" id="result-box">
-      <span class="result-icon" id="result-icon"></span>
-      <div class="result-text">
-        <p id="result-title"></p>
-        <small id="result-sub"></small>
-        <div id="accessibility-score-display" style="margin-top: 8px; display: none;">
-          <div style="font-size: 12px; color: var(--gray-2); margin-bottom: 4px;">📊 ציון נגישות:</div>
-          <div style="display: flex; gap: 8px; align-items: center;">
-            <div id="score-bar" style="flex: 1; height: 20px; background: var(--gray-4); border-radius: 99px; overflow: hidden;">
-              <div id="score-fill" style="height: 100%; background: linear-gradient(90deg, var(--green), #84CC16); width: 0%; border-radius: 99px; display: flex; align-items: center; justify-content: center; color: white; font-size: 11px; font-weight: 600;"></div>
-            </div>
-            <span id="score-text" style="font-weight: 600; color: var(--green); min-width: 40px;">0%</span>
-          </div>
-        </div>
-      </div>
-      <button class="btn-download" id="btn-download" style="display:none">⬇ הורדה</button>
-    </div>
-  </div>
-
-  <!-- History -->
-  <div class="card">
-    <div class="card-header">
-      <div class="card-icon icon-gray">🕓</div>
-      <h2>היסטוריית מסמכים</h2>
-    </div>
-
-    <div class="table-toolbar">
-      <input class="search-input" id="search-input" type="text" placeholder="חיפוש לפי שם מסמך..." oninput="filterHistory()">
-      <button class="btn-sm" onclick="loadHistory()">רענן</button>
-    </div>
-
-    <div class="history-wrap">
-      <table id="history-table">
-        <thead>
-          <tr>
-            <th>שם המסמך</th>
-            <th>תאריך</th>
-            <th>עמודים</th>
-            <th>זמן עיבוד</th>
-            <th>ציון נגישות</th>
-            <th>סטטוס</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody id="history-body">
-          <tr><td colspan="7"><div class="empty-history">טוען...</div></td></tr>
-        </tbody>
-      </table>
-    </div>
-  </div>
-</main>
 
 <script>
 let allHistory = [];
