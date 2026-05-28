@@ -1001,49 +1001,59 @@ def add_accessible_badge(pdf_path: str) -> None:
     except ImportError:
         return
 
-    SCALE   = 3
-    TEXT    = "נוסח מונגש"
-    GREEN   = (34, 197, 94)     # #22C55E
+    SCALE   = 6                  # גבוה — חדות מקסימלית
+    BLUE    = (0, 51, 169)       # #0033A9 כחול עיריית אילת
     WHITE   = (255, 255, 255)
-    FONT_PT = 6
-    FONT_PX = int(FONT_PT * SCALE * 96 / 72)
+    ACCENT  = (40, 166, 217)     # #28A6D9 תכלת
+    FONT_PX = int(9 * SCALE * 96 / 72)   # 9pt
 
-    # גופן — Segoe UI (נקי, נתמך ב-Windows)
-    font = None
-    for fp in ["C:/Windows/Fonts/segoeuib.ttf", "C:/Windows/Fonts/segoeui.ttf",
-               "C:/Windows/Fonts/Tahoma.ttf", "C:/Windows/Fonts/Arial.ttf"]:
+    # גופן עברית — Arial ראשון
+    font = font_sm = None
+    for fp in ["C:/Windows/Fonts/arialbd.ttf", "C:/Windows/Fonts/arial.ttf",
+               "C:/Windows/Fonts/Tahoma.ttf"] + FONT_CANDIDATES:
         if os.path.exists(fp):
             try:
-                font = _Font.truetype(fp, FONT_PX)
+                font    = _Font.truetype(fp, FONT_PX)
+                font_sm = _Font.truetype(fp, int(FONT_PX * 0.75))
                 break
             except Exception:
                 continue
     if font is None:
-        font = _Font.load_default()
+        font = font_sm = _Font.load_default()
 
     # bidi
     try:
         from bidi.algorithm import get_display as _bidi
-        display_text = _bidi(TEXT, base_dir="R")
     except ImportError:
-        display_text = TEXT
+        _bidi = lambda t, **kw: t
 
-    # מידות
+    line1 = _bidi("✓  נוסח מונגש", base_dir="R")
+    line2 = _bidi("עיריית אילת", base_dir="R")
+
     dummy = _Img.new("RGBA", (1, 1))
-    bb = _Draw.Draw(dummy).textbbox((0, 0), display_text, font=font)
-    tw, th = bb[2] - bb[0], bb[3] - bb[1]
-    PAD_X, PAD_Y = 7 * SCALE, 4 * SCALE
+    d_dummy = _Draw.Draw(dummy)
+    bb1 = d_dummy.textbbox((0, 0), line1, font=font)
+    bb2 = d_dummy.textbbox((0, 0), line2, font=font_sm)
+    tw  = max(bb1[2]-bb1[0], bb2[2]-bb2[0])
+    th  = (bb1[3]-bb1[1]) + (bb2[3]-bb2[1]) + 4 * SCALE
+    PAD_X, PAD_Y = 10 * SCALE, 6 * SCALE
     W, H = tw + PAD_X * 2, th + PAD_Y * 2
-    BORDER = max(2, SCALE)
 
-    img = _Img.new("RGBA", (W, H), (0, 0, 0, 0))
+    img  = _Img.new("RGBA", (W, H), (0, 0, 0, 0))
     draw = _Draw.Draw(img)
-    # רקע לבן + מסגרת ירוקה
-    draw.rounded_rectangle([0, 0, W - 1, H - 1], radius=H // 2,
-                           fill=WHITE + (240,), outline=GREEN + (255,), width=BORDER)
-    # טקסט ירוק
-    draw.text((PAD_X - bb[0], PAD_Y - bb[1]), display_text,
-              font=font, fill=GREEN)
+
+    # רקע כחול מלא
+    draw.rounded_rectangle([0, 0, W-1, H-1], radius=H//3,
+                           fill=BLUE + (245,))
+    # פס תכלת בתחתית
+    draw.rounded_rectangle([0, H - 6*SCALE, W-1, H-1], radius=3*SCALE,
+                           fill=ACCENT + (200,))
+
+    # שורה 1 — "✓ נוסח מונגש" לבן
+    draw.text((PAD_X - bb1[0], PAD_Y - bb1[1]), line1, font=font, fill=WHITE)
+    # שורה 2 — "עיריית אילת" תכלת בהיר
+    y2 = PAD_Y + (bb1[3]-bb1[1]) + 3*SCALE
+    draw.text((PAD_X - bb2[0], y2 - bb2[1]), line2, font=font_sm, fill=ACCENT)
 
     buf = io.BytesIO()
     img.save(buf, "PNG")
@@ -1111,35 +1121,43 @@ def add_accessible_notice_banner(pdf_path: str, title: str = "", processed_date:
     date_str = processed_date or datetime.date.today().strftime("%d.%m.%Y")
 
     # ── עיצוב התיבה ───────────────────────────────────────────────────────
-    SCALE      = 3          # רזולוציה גבוהה לחדות
-    BNR_W_PT   = 500        # רוחב בנקודות PDF
-    BNR_H_PT   = 44         # גובה בנקודות PDF
+    SCALE      = 6          # גבוה — חדות מקסימלית
+    BNR_W_PT   = 520        # רוחב בנקודות PDF
+    BNR_H_PT   = 52         # גובה בנקודות PDF
     BNR_W_PX   = BNR_W_PT * SCALE
     BNR_H_PX   = BNR_H_PT * SCALE
 
-    BG         = (0, 51, 169)       # כחול עיריית אילת #0033A9
-    ACCENT     = (40, 166, 217)     # תכלת #28A6D9
+    BG         = (0, 33, 100)        # כחול כהה
+    BG2        = (0, 51, 169)        # #0033A9
+    ACCENT     = (40, 166, 217)      # תכלת #28A6D9
     TEXT_COL   = (255, 255, 255)
-    SUB_COL    = (200, 220, 255)
+    SUB_COL    = (180, 210, 255)
 
-    img = _Img.new("RGBA", (BNR_W_PX, BNR_H_PX), (0, 0, 0, 0))
+    img  = _Img.new("RGBA", (BNR_W_PX, BNR_H_PX), (0, 0, 0, 0))
     draw = _Draw.Draw(img)
 
-    # רקע כחול עם עיגול פינות
-    r = 12 * SCALE
-    draw.rounded_rectangle([0, 0, BNR_W_PX - 1, BNR_H_PX - 1], radius=r,
-                           fill=BG + (230,))
+    # גרדיאנט ידני — כחול כהה → כחול עיריית אילת
+    for px in range(BNR_W_PX):
+        t = px / BNR_W_PX
+        r = int(BG[0] + (BG2[0]-BG[0]) * t)
+        g = int(BG[1] + (BG2[1]-BG[1]) * t)
+        b = int(BG[2] + (BG2[2]-BG[2]) * t)
+        draw.line([(px, 0), (px, BNR_H_PX)], fill=(r, g, b, 235))
 
-    # פס תכלת בצד ימין
-    draw.rectangle([BNR_W_PX - 10 * SCALE, 0, BNR_W_PX - 1, BNR_H_PX - 1],
-                   fill=ACCENT + (200,))
+    # פינות מעוגלות
+    r_corner = 10 * SCALE
+    draw.rounded_rectangle([0, 0, BNR_W_PX-1, BNR_H_PX-1],
+                           radius=r_corner, outline=ACCENT+(180,), width=2*SCALE)
 
-    # גופן
+    # פס תכלת בצד שמאל (RTL = ייצוג גרפי)
+    draw.rectangle([0, 0, 8*SCALE, BNR_H_PX-1], fill=ACCENT+(220,))
+
+    # גופן — Arial Bold לכותרת, Arial רגיל לטקסט משני
     font_lg = font_sm = None
-    for fp in reversed(FONT_CANDIDATES):
+    for fp in ["C:/Windows/Fonts/arialbd.ttf", "C:/Windows/Fonts/arial.ttf"] + FONT_CANDIDATES:
         if os.path.exists(fp):
             try:
-                font_lg = _Font.truetype(fp, 13 * SCALE)
+                font_lg = _Font.truetype(fp, 14 * SCALE)
                 font_sm = _Font.truetype(fp, 9 * SCALE)
                 break
             except Exception:
@@ -1153,22 +1171,20 @@ def add_accessible_notice_banner(pdf_path: str, title: str = "", processed_date:
     except ImportError:
         _bidi = lambda t, **kw: t
 
-    line1_raw = f"הונגש על-ידי עיריית אילת  |  {date_str}"
+    line1_raw = f"✓  הונגש על-ידי עיריית אילת  |  {date_str}"
     if title:
-        line1_raw = f"הונגש על-ידי עיריית אילת  |  {title[:45]}  |  {date_str}"
+        line1_raw = f"✓  הונגש על-ידי עיריית אילת  |  {title[:40]}  |  {date_str}"
     line1 = _bidi(line1_raw, base_dir="R")
     line2 = _bidi(
         "נוסח נגיש למטרת נגישות בלבד. הנוסח המחייב הוא המקור הסרוק והחתום המצורף.",
         base_dir="R"
     )
 
-    # שורה 1 — כותרת
-    draw.text((16 * SCALE, 6 * SCALE), line1,
-              font=font_lg, fill=TEXT_COL)
-
-    # שורה 2 — נוסח משפטי
-    draw.text((16 * SCALE, 23 * SCALE), line2,
-              font=font_sm, fill=SUB_COL)
+    PAD_X = 18 * SCALE
+    # שורה 1 — כותרת לבנה
+    draw.text((PAD_X, 7 * SCALE), line1, font=font_lg, fill=TEXT_COL)
+    # שורה 2 — נוסח משפטי תכלת בהיר
+    draw.text((PAD_X, 30 * SCALE), line2, font=font_sm, fill=SUB_COL)
 
     buf = io.BytesIO()
     img.save(buf, "PNG")

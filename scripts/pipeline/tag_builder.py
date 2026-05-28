@@ -785,7 +785,15 @@ def inject_digital(
             page_obj["/StructParents"] = int(pg_idx)
 
         # --- Step 2: match leaf struct elems to MCIDs --------------------
-        page_elems    = by_page.get(pg_num, [])
+        # Sort by y (top→bottom) then x-descending (RTL) so Tags panel
+        # reading order matches visual/logical reading order.
+        page_elems = sorted(
+            by_page.get(pg_num, []),
+            key=lambda e: (
+                e.source_bbox[1] if e.source_bbox else 0,
+                -(e.source_bbox[0] if e.source_bbox else 0),
+            )
+        )
         leaf_mcid_map = _assign_mcids(page_elems, mcid_texts)
 
         # --- Step 3: build struct tree for this page ---------------------
