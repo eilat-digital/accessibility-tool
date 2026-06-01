@@ -1240,6 +1240,7 @@ def get_report_html(job_id):
         return jsonify({'error': 'לא נמצא או לא הושלם'}), 404
 
     score_color = '#16a34a' if d['status_cls'] == 'pass' else ('#f59e0b' if d['status_cls'] == 'warn' else '#ef4444')
+    score_bg    = '#f0faf3' if d['status_cls'] == 'pass' else ('#fffbeb' if d['status_cls'] == 'warn' else '#fef2f2')
     actions_html = ''.join(f'<li>{a}</li>' for a in d['actions'])
     errors_html  = ''.join(f'<li class="err">{e}</li>' for e in d['errors'][:10])
     warns_html   = ''.join(f'<li class="wrn">{w}</li>' for w in d['warnings'][:10])
@@ -1249,40 +1250,50 @@ def get_report_html(job_id):
 <head>
 <meta charset="UTF-8">
 <title>דוח נגישות — {d['name']}</title>
+<link href="https://fonts.googleapis.com/css2?family=Nunito+Sans:wght@400;600;700;800&display=swap" rel="stylesheet">
 <style>
-  body{{font-family:'Arial',sans-serif;background:#f4f7fc;color:#212529;margin:0;padding:24px;direction:rtl}}
-  .cert{{background:#fff;border-radius:12px;max-width:720px;margin:0 auto;overflow:hidden;box-shadow:0 4px 24px rgba(0,51,169,.12)}}
-  .cert-header{{background:linear-gradient(135deg,#0033A9,#2772BF);color:#fff;padding:28px 32px 20px}}
-  .cert-header h1{{margin:0 0 4px;font-size:22px}}
-  .cert-header p{{margin:0;opacity:.85;font-size:13px}}
+  :root{{--primary:#4a7c59;--primary-c:#d4e3d6;--amber:#705c30;--bg:#faf6f0;--card:#fff;--text:#1b1c18;--muted:#6b7280;}}
+  body{{font-family:'Nunito Sans',Arial,sans-serif;background:var(--bg);color:var(--text);margin:0;padding:24px;direction:rtl}}
+  .cert{{background:var(--card);border-radius:20px;max-width:700px;margin:0 auto;overflow:hidden;box-shadow:0 4px 20px rgba(46,50,48,.08)}}
+  .cert-header{{background:linear-gradient(135deg,var(--primary),#6aaf7d);color:#fff;padding:28px 32px 22px;display:flex;align-items:center;gap:16px}}
+  .cert-header-text h1{{margin:0 0 4px;font-size:20px;font-weight:800}}
+  .cert-header-text p{{margin:0;opacity:.85;font-size:12px;font-weight:600}}
+  .cert-header-stamp{{height:52px;width:auto;opacity:.9}}
   .cert-body{{padding:28px 32px}}
-  .ref{{display:inline-block;background:#e8f0fc;color:#0033A9;border:1px solid #b0c8f5;border-radius:6px;padding:5px 14px;font-size:13px;font-weight:700;margin-bottom:20px;letter-spacing:.05em}}
-  .meta-grid{{display:grid;grid-template-columns:1fr 1fr;gap:8px 24px;margin-bottom:24px}}
-  .meta-item{{font-size:13px}}.meta-label{{color:#666;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em}}
-  .score-box{{text-align:center;background:#f8faff;border:2px solid {score_color};border-radius:10px;padding:18px;margin-bottom:24px}}
-  .score-num{{font-size:52px;font-weight:800;color:{score_color};line-height:1}}
-  .score-label{{font-size:14px;font-weight:700;color:{score_color};margin-top:4px}}
-  .score-sub{{font-size:12px;color:#666;margin-top:2px}}
-  .standards{{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:24px}}
-  .std-chip{{background:#e8f0fc;color:#0033A9;border:1px solid #b0c8f5;border-radius:20px;padding:4px 14px;font-size:12px;font-weight:700}}
-  .section-title{{font-size:13px;font-weight:700;color:#212529;border-bottom:2px solid #e8f0fc;padding-bottom:6px;margin:0 0 10px}}
-  ul{{margin:0 0 20px;padding-right:18px}}
-  li{{font-size:13px;margin-bottom:4px;color:#333}}
+  .ref{{display:inline-flex;align-items:center;gap:8px;background:var(--primary-c);color:var(--primary);border-radius:99px;padding:5px 16px;font-size:12px;font-weight:800;margin-bottom:22px;letter-spacing:.04em}}
+  .meta-grid{{display:grid;grid-template-columns:1fr 1fr;gap:10px 28px;margin-bottom:24px;background:var(--bg);border-radius:12px;padding:16px}}
+  .meta-item{{font-size:13px;font-weight:600}}
+  .meta-label{{color:var(--muted);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;margin-bottom:3px}}
+  .score-box{{text-align:center;background:{score_bg};border:2px solid {score_color};border-radius:16px;padding:20px;margin-bottom:24px}}
+  .score-num{{font-size:56px;font-weight:800;color:{score_color};line-height:1}}
+  .score-label{{font-size:14px;font-weight:800;color:{score_color};margin-top:6px}}
+  .score-sub{{font-size:11px;color:var(--muted);margin-top:3px;font-weight:600}}
+  .standards{{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:24px}}
+  .std-chip{{background:var(--primary-c);color:var(--primary);border-radius:99px;padding:4px 14px;font-size:11px;font-weight:800}}
+  .section-title{{font-size:12px;font-weight:800;color:var(--primary);text-transform:uppercase;letter-spacing:.08em;border-bottom:2px solid var(--primary-c);padding-bottom:6px;margin:0 0 12px}}
+  ul{{margin:0 0 20px;padding-right:20px}}
+  li{{font-size:13px;margin-bottom:5px;color:var(--text);font-weight:600}}
+  li::marker{{color:var(--primary)}}
   li.err{{color:#b91c1c}} li.wrn{{color:#92400e}}
-  .cert-footer{{background:#f8faff;border-top:1px solid #e2e8f2;padding:16px 32px;font-size:11px;color:#666;display:flex;justify-content:space-between;align-items:center}}
-  .print-btn{{background:#0033A9;color:#fff;border:none;border-radius:6px;padding:8px 20px;font-size:13px;cursor:pointer;margin-bottom:16px}}
+  .cert-footer{{background:var(--bg);border-top:1px solid var(--primary-c);padding:14px 32px;font-size:11px;color:var(--muted);display:flex;justify-content:space-between;align-items:center;font-weight:700}}
+  .print-btn{{background:var(--primary);color:#fff;border:none;border-radius:10px;padding:9px 22px;font-family:inherit;font-size:13px;font-weight:700;cursor:pointer;margin-bottom:18px;box-shadow:0 4px 12px rgba(74,124,89,.25)}}
+  .print-btn:hover{{background:#3d6b4c}}
   @media print{{.print-btn{{display:none}}}}
 </style>
 </head>
 <body>
 <div class="cert">
   <div class="cert-header">
-    <h1>אסמכתת נגישות מסמך</h1>
-    <p>עיריית אילת — מערכת הנגשת מסמכים | IS 5568 / WCAG 2.1 AA / PDF/UA-1</p>
+    <div class="cert-header-text">
+      <h1>אסמכתת נגישות מסמך</h1>
+      <p>עיריית אילת — IS 5568 / WCAG 2.1 AA / PDF/UA-1</p>
+    </div>
+    <img src="/assets/stamp.png" alt="חותמת נגישות עיריית אילת" class="cert-header-stamp"
+         onerror="this.style.display='none'">
   </div>
   <div class="cert-body">
-    <button class="print-btn" onclick="window.print()">הדפס / שמור PDF</button>
-    <div class="ref">מספר אסמכתא: {d['ref_num']}</div>
+    <button class="print-btn" onclick="window.print()">🖨 הדפס / שמור PDF</button>
+    <div class="ref">📋 מספר אסמכתא: {d['ref_num']}</div>
     <div class="meta-grid">
       <div class="meta-item"><div class="meta-label">שם המסמך</div>{d['name']}</div>
       <div class="meta-item"><div class="meta-label">תאריך עיבוד</div>{d['date']} {d['time']}</div>
@@ -1302,7 +1313,7 @@ def get_report_html(job_id):
     </div>
     <div class="section-title">פעולות שבוצעו</div>
     <ul>{actions_html}</ul>
-    {'<div class="section-title">שגיאות ואזהרות</div><ul>' + errors_html + warns_html + '</ul>' if d['errors'] or d['warnings'] else ''}
+    {'<div class="section-title">הערות</div><ul>' + errors_html + warns_html + '</ul>' if d['errors'] or d['warnings'] else ''}
   </div>
   <div class="cert-footer">
     <span>הופק על-ידי מערכת הנגשת מסמכים — עיריית אילת</span>
