@@ -1341,12 +1341,15 @@ def get_report_pdf(job_id):
         W_PT, H_PT = 595, 842   # A4
         W_PX, H_PX = W_PT * SCALE, H_PT * SCALE
 
-        BLUE    = (0, 51, 169)
-        BLUE_M  = (39, 114, 191)
-        TEAL    = (40, 166, 217)
+        # Terra/Eilat palette
+        PRIMARY = (74, 124, 89)    # #4a7c59
+        PRIMARY_D=(45, 92, 58)     # #2d5c3a
+        PRIMARY_C=(212, 227, 214)  # #d4e3d6
+        AMBER   = (112, 92, 48)    # #705c30
+        BG      = (250, 246, 240)  # #faf6f0
+        BG2     = (242, 237, 230)  # #f2ede6
         WHITE   = (255, 255, 255)
-        BG      = (244, 247, 252)
-        GRAY    = (100, 100, 100)
+        GRAY    = (107, 114, 128)
         GREEN   = (22, 163, 74)
         WARN_C  = (180, 83, 9)
         FAIL_C  = (185, 28, 54)
@@ -1375,22 +1378,40 @@ def get_report_pdf(job_id):
         img  = PILImage.new("RGB", (W_PX, H_PX), BG)
         draw = ImageDraw.Draw(img)
 
-        # ── Header ──
-        draw.rectangle([0, 0, W_PX, 120*SCALE], fill=BLUE)
-        draw.rectangle([0, 110*SCALE, W_PX, 120*SCALE], fill=TEAL)
-        draw.text((W_PX-32*SCALE, 18*SCALE), txt("אסמכתת נגישות מסמך"),
+        # ── Header (Terra green gradient) ──
+        for px in range(W_PX):
+            t = px / W_PX
+            r = int(PRIMARY[0] + (PRIMARY_D[0]-PRIMARY[0]) * t)
+            g = int(PRIMARY[1] + (PRIMARY_D[1]-PRIMARY[1]) * t)
+            b = int(PRIMARY[2] + (PRIMARY_D[2]-PRIMARY[2]) * t)
+            draw.line([(px,0),(px,110*SCALE)], fill=(r,g,b))
+        draw.rectangle([0, 108*SCALE, W_PX, 120*SCALE], fill=AMBER)
+        draw.text((W_PX-32*SCALE, 16*SCALE), txt("אסמכתת נגישות מסמך"),
                   font=_font(18, bold=True), fill=WHITE, anchor="ra")
         draw.text((W_PX-32*SCALE, 44*SCALE), txt("עיריית אילת — מערכת הנגשת מסמכים"),
-                  font=_font(10), fill=(200, 220, 255), anchor="ra")
+                  font=_font(10), fill=(220, 235, 220), anchor="ra")
         draw.text((W_PX-32*SCALE, 60*SCALE), txt("IS 5568  |  WCAG 2.1 AA  |  PDF/UA-1"),
-                  font=_font(9), fill=(180, 210, 255), anchor="ra")
+                  font=_font(9), fill=(200, 220, 200), anchor="ra")
+
+        # Add stamp image if available
+        _stamp_path = str(BASE_DIR / 'assets' / 'stamp.png')
+        if os.path.exists(_stamp_path):
+            try:
+                from PIL import Image as _SImg
+                si = _SImg.open(_stamp_path).convert("RGBA")
+                sh = 80*SCALE
+                sw = int(sh * si.width / si.height)
+                si = si.resize((sw, sh), _SImg.LANCZOS)
+                img.paste(si, (20*SCALE, (120*SCALE - sh)//2), si)
+            except Exception:
+                pass
 
         y = 140*SCALE
 
         # ── Ref number ──
-        draw.rectangle([30*SCALE, y, W_PX-30*SCALE, y+22*SCALE], fill=(232, 240, 252))
+        draw.rectangle([30*SCALE, y, W_PX-30*SCALE, y+22*SCALE], fill=PRIMARY_C)
         draw.text((W_PX-40*SCALE, y+4*SCALE), txt(f"מספר אסמכתא:  {d['ref_num']}"),
-                  font=_font(10, bold=True), fill=BLUE, anchor="ra")
+                  font=_font(10, bold=True), fill=PRIMARY, anchor="ra")
         y += 32*SCALE
 
         # ── Meta ──
@@ -1425,16 +1446,16 @@ def get_report_pdf(job_id):
         for chip in ["✓  IS 5568", "✓  WCAG 2.1 AA", "✓  PDF/UA-1", "✓  RTL עברית"]:
             cw = 90*SCALE
             draw.rectangle([W_PX - 40*SCALE - cw, y, W_PX-40*SCALE, y+18*SCALE],
-                           fill=(232, 240, 252), outline=BLUE_M, width=1)
+                           fill=PRIMARY_C, outline=PRIMARY, width=1)
             draw.text((W_PX-40*SCALE - cw//2, y+4*SCALE), txt(chip),
-                      font=_font(8), fill=BLUE, anchor="ma")
+                      font=_font(8), fill=PRIMARY, anchor="ma")
             y += 24*SCALE
         y += 6*SCALE
 
         # ── Actions ──
         draw.text((W_PX-40*SCALE, y), txt("פעולות שבוצעו"),
-                  font=_font(10, bold=True), fill=BLUE, anchor="ra")
-        draw.line([30*SCALE, y+14*SCALE, W_PX-30*SCALE, y+14*SCALE], fill=(200, 215, 240), width=1)
+                  font=_font(10, bold=True), fill=PRIMARY, anchor="ra")
+        draw.line([30*SCALE, y+14*SCALE, W_PX-30*SCALE, y+14*SCALE], fill=PRIMARY_C, width=1)
         y += 20*SCALE
         for action in d['actions']:
             draw.text((W_PX-50*SCALE, y), txt(f"• {action}"),
@@ -1445,7 +1466,7 @@ def get_report_pdf(job_id):
         if d['errors'] or d['warnings']:
             y += 8*SCALE
             draw.text((W_PX-40*SCALE, y), txt("הערות"),
-                      font=_font(10, bold=True), fill=BLUE, anchor="ra")
+                      font=_font(10, bold=True), fill=PRIMARY, anchor="ra")
             y += 18*SCALE
             for e in d['errors'][:5]:
                 draw.text((W_PX-50*SCALE, y), txt(f"✗ {e[:70]}"),
@@ -1457,12 +1478,12 @@ def get_report_pdf(job_id):
                 y += 14*SCALE
 
         # ── Footer ──
-        draw.rectangle([0, H_PX-40*SCALE, W_PX, H_PX], fill=BLUE)
+        draw.rectangle([0, H_PX-40*SCALE, W_PX, H_PX], fill=PRIMARY)
         draw.text((W_PX-32*SCALE, H_PX-30*SCALE),
                   txt("הופק על-ידי מערכת הנגשת מסמכים — עיריית אילת"),
-                  font=_font(8), fill=(200, 220, 255), anchor="ra")
+                  font=_font(8), fill=(220, 235, 220), anchor="ra")
         draw.text((32*SCALE, H_PX-30*SCALE), txt(d['date']),
-                  font=_font(8), fill=(200, 220, 255), anchor="la")
+                  font=_font(8), fill=(220, 235, 220), anchor="la")
 
         # ── PNG → PDF via pikepdf ──
         buf = io.BytesIO()
