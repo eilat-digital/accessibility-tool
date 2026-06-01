@@ -1053,6 +1053,26 @@ def add_accessible_badge(pdf_path: str) -> None:
             res = page.obj["/Resources"]
             if "/XObject" not in res:
                 res["/XObject"] = pdf.make_indirect(Dictionary())
+            # הסר חותמת קיימת מריצה קודמת (למניעת כפילות בהנגשה מחדש)
+            if "/AccessBadge" in res["/XObject"]:
+                del res["/XObject"]["/AccessBadge"]
+            # הסר content streams קיימים של חותמת
+            contents = page.obj.get("/Contents")
+            if contents is not None:
+                try:
+                    streams = list(contents) if isinstance(contents, pikepdf.Array) else [contents]
+                    clean = []
+                    for st in streams:
+                        try:
+                            raw = st.get_object().read_bytes() if hasattr(st.get_object(), 'read_bytes') else b''
+                            if b'/AccessBadge' not in raw:
+                                clean.append(st)
+                        except Exception:
+                            clean.append(st)
+                    if len(clean) != len(streams):
+                        page.obj["/Contents"] = pikepdf.Array(clean) if len(clean) > 1 else (clean[0] if clean else contents)
+                except Exception:
+                    pass
             res["/XObject"]["/AccessBadge"] = xobj
             stream_data = (
                 f"/Artifact <</Type /Layout /BBox {bbox}>> BDC\n"
