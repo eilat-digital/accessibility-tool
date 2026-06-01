@@ -1180,25 +1180,29 @@ def _build_report_data(job_id: str) -> dict | None:
     except Exception:
         pass
 
+    feats_raw = row['accessibility_features'] or ''
     feats = {}
     try:
-        feats = json.loads(row['accessibility_features'] or '{}')
+        parsed = json.loads(feats_raw)
+        if isinstance(parsed, dict):
+            feats = parsed
+        elif isinstance(parsed, list):
+            # stored as list of feature strings — convert to set for lookup
+            feats = {f: True for f in parsed}
     except Exception:
         pass
 
+    feats_str = feats_raw.lower()
     actions = []
-    if feats.get('ocr'):
+    if feats.get('ocr') or 'ocr' in feats_str:
         actions.append("זיהוי טקסט OCR בעברית")
     if feats.get('struct_tags') or score > 25:
         actions.append("הוספת תגיות מבנה (H1–H3, P, Table, List)")
-    if feats.get('ai_alt') or feats.get('ai_descriptions'):
+    if feats.get('ai_alt') or feats.get('ai_descriptions') or 'ai' in feats_str:
         actions.append("תיאור AI לתמונות וחתימות (WCAG 1.1.1)")
-    if feats.get('lang_set') or True:
-        actions.append("הגדרת שפה he-IL ומטא-נתוני PDF/UA")
-    if feats.get('reading_order') or True:
-        actions.append("קביעת סדר קריאה לוגי RTL")
-    if feats.get('marked_info') or True:
-        actions.append("MarkInfo/Marked + pdfuaid:part=1")
+    actions.append("הגדרת שפה he-IL ומטא-נתוני PDF/UA")
+    actions.append("קביעת סדר קריאה לוגי RTL")
+    actions.append("MarkInfo/Marked + pdfuaid:part=1")
 
     errors   = vr.get('errors', [])
     warnings = vr.get('warnings', [])

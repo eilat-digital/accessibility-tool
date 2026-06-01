@@ -992,76 +992,50 @@ def apply_stamp_to_pdf(pdf_path, note_text=None):
         raise e
 
 def add_accessible_badge(pdf_path: str) -> None:
-    """מוסיף תג pill ירוק '✓ נוסח מונגש' לפינה הימנית-עליונה של עמוד 1 בלבד."""
+    """מוסיף חותמת 'מסמך נגיש' לפינה הימנית-עליונה של עמוד 1.
+    משתמש ב-assets/stamp.png אם קיים, אחרת מייצר חותמת ברירת מחדל."""
     import io, shutil
     import pikepdf
     from pikepdf import Stream as PdfStream, Array as PdfArray, Dictionary
     try:
-        from PIL import Image as _Img, ImageDraw as _Draw, ImageFont as _Font
+        from PIL import Image as _Img
     except ImportError:
         return
 
-    SCALE   = 6                  # גבוה — חדות מקסימלית
-    BLUE    = (0, 51, 169)       # #0033A9 כחול עיריית אילת
-    WHITE   = (255, 255, 255)
-    ACCENT  = (40, 166, 217)     # #28A6D9 תכלת
-    FONT_PX = int(9 * SCALE * 96 / 72)   # 9pt
+    # חפש את קובץ החותמת המותאם אישית
+    _script_dir = os.path.dirname(os.path.abspath(__file__))
+    _asset_path = os.path.join(_script_dir, '..', 'assets', 'stamp.png')
+    _asset_path = os.path.normpath(_asset_path)
 
-    # גופן עברית — Arial ראשון
-    font = font_sm = None
-    for fp in ["C:/Windows/Fonts/arialbd.ttf", "C:/Windows/Fonts/arial.ttf",
-               "C:/Windows/Fonts/Tahoma.ttf"] + FONT_CANDIDATES:
-        if os.path.exists(fp):
-            try:
-                font    = _Font.truetype(fp, FONT_PX)
-                font_sm = _Font.truetype(fp, int(FONT_PX * 0.75))
-                break
-            except Exception:
-                continue
-    if font is None:
-        font = font_sm = _Font.load_default()
-
-    # bidi
-    try:
-        from bidi.algorithm import get_display as _bidi
-    except ImportError:
-        _bidi = lambda t, **kw: t
-
-    line1 = _bidi("✓  נוסח מונגש", base_dir="R")
-    line2 = _bidi("עיריית אילת", base_dir="R")
-
-    dummy = _Img.new("RGBA", (1, 1))
-    d_dummy = _Draw.Draw(dummy)
-    bb1 = d_dummy.textbbox((0, 0), line1, font=font)
-    bb2 = d_dummy.textbbox((0, 0), line2, font=font_sm)
-    tw  = max(bb1[2]-bb1[0], bb2[2]-bb2[0])
-    th  = (bb1[3]-bb1[1]) + (bb2[3]-bb2[1]) + 4 * SCALE
-    PAD_X, PAD_Y = 10 * SCALE, 6 * SCALE
-    W, H = tw + PAD_X * 2, th + PAD_Y * 2
-
-    img  = _Img.new("RGBA", (W, H), (0, 0, 0, 0))
-    draw = _Draw.Draw(img)
-
-    # רקע כחול מלא
-    draw.rounded_rectangle([0, 0, W-1, H-1], radius=H//3,
-                           fill=BLUE + (245,))
-    # פס תכלת בתחתית
-    draw.rounded_rectangle([0, H - 6*SCALE, W-1, H-1], radius=3*SCALE,
-                           fill=ACCENT + (200,))
-
-    # שורה 1 — "✓ נוסח מונגש" לבן
-    draw.text((PAD_X - bb1[0], PAD_Y - bb1[1]), line1, font=font, fill=WHITE)
-    # שורה 2 — "עיריית אילת" תכלת בהיר
-    y2 = PAD_Y + (bb1[3]-bb1[1]) + 3*SCALE
-    draw.text((PAD_X - bb2[0], y2 - bb2[1]), line2, font=font_sm, fill=ACCENT)
-
-    buf = io.BytesIO()
-    img.save(buf, "PNG")
-    png_bytes = buf.getvalue()
-
-    # ממדים בנקודות PDF
-    W_PT = W / SCALE * (72 / 96)
-    H_PT = H / SCALE * (72 / 96)
+    if os.path.exists(_asset_path):
+        # השתמש בחותמת המותאמת
+        stamp_img = _Img.open(_asset_path).convert("RGBA")
+        # גובה קבוע 36 נקודות PDF, רוחב יחסי
+        H_PT = 36.0
+        W_PT = H_PT * stamp_img.width / stamp_img.height
+        buf = io.BytesIO()
+        stamp_img.save(buf, "PNG")
+        png_bytes = buf.getvalue()
+    else:
+        # חותמת ברירת מחדל — כחול עיריית אילת
+        from PIL import ImageDraw as _Draw, ImageFont as _Font
+        SCALE = 6
+        BLUE  = (0, 51, 169)
+        WHITE = (255, 255, 255)
+        img   = _Img.new("RGBA", (300*SCALE, 60*SCALE), (0,0,0,0))
+        draw  = _Draw.Draw(img)
+        draw.rounded_rectangle([0, 0, 300*SCALE-1, 60*SCALE-1],
+                               radius=20*SCALE, fill=BLUE+(240,))
+        try:
+            fnt = _Font.truetype("C:/Windows/Fonts/arialbd.ttf", 28*SCALE)
+        except Exception:
+            fnt = _Font.load_default()
+        draw.text((150*SCALE, 30*SCALE), "מסמך נגיש",
+                  font=fnt, fill=WHITE, anchor="mm")
+        buf = io.BytesIO()
+        img.save(buf, "PNG")
+        png_bytes = buf.getvalue()
+        H_PT, W_PT = 30.0, 150.0
 
     tmp = pdf_path + ".badge_tmp"
     try:
