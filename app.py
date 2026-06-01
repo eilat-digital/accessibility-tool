@@ -774,8 +774,9 @@ def logout():
 @app.route('/assets/<path:filename>')
 def serve_asset(filename):
     """מגיש קבצי assets (חותמת, לוגו וכו')"""
-    assets_dir = BASE_DIR / 'assets'
-    return send_file(assets_dir / filename)
+    from flask import send_from_directory
+    assets_dir = str(BASE_DIR / 'assets')
+    return send_from_directory(assets_dir, filename)
 
 @app.route('/')
 @login_required
@@ -1159,7 +1160,8 @@ def _build_report_data(job_id: str) -> dict | None:
         return None
 
     import hashlib, datetime as _dt
-    ref_num = "IL-" + hashlib.sha256(job_id.encode()).hexdigest()[:8].upper()
+    doc_name_short = row['original_name'].replace('.pdf','').replace('.PDF','')[:20].strip()
+    ref_num = f"IL-{hashlib.sha256(job_id.encode()).hexdigest()[:6].upper()} | {doc_name_short}"
     created = row['created_at'] or ''
     try:
         dt = _dt.datetime.fromisoformat(created)
@@ -1258,7 +1260,7 @@ def get_report_html(job_id):
   .cert-header{{background:linear-gradient(135deg,var(--primary),#6aaf7d);color:#fff;padding:28px 32px 22px;display:flex;align-items:center;gap:16px}}
   .cert-header-text h1{{margin:0 0 4px;font-size:20px;font-weight:800}}
   .cert-header-text p{{margin:0;opacity:.85;font-size:12px;font-weight:600}}
-  .cert-header-stamp{{height:52px;width:auto;opacity:.9}}
+  .cert-header-stamp{{height:36px;width:auto;opacity:.9}}
   .cert-body{{padding:28px 32px}}
   .ref{{display:inline-flex;align-items:center;gap:8px;background:var(--primary-c);color:var(--primary);border-radius:99px;padding:5px 16px;font-size:12px;font-weight:800;margin-bottom:22px;letter-spacing:.04em}}
   .meta-grid{{display:grid;grid-template-columns:1fr 1fr;gap:10px 28px;margin-bottom:24px;background:var(--bg);border-radius:12px;padding:16px}}
@@ -1288,8 +1290,6 @@ def get_report_html(job_id):
       <h1>אסמכתת נגישות מסמך</h1>
       <p>עיריית אילת — IS 5568 / WCAG 2.1 AA / PDF/UA-1</p>
     </div>
-    <img src="/assets/stamp.png" alt="חותמת נגישות עיריית אילת" class="cert-header-stamp"
-         onerror="this.style.display='none'">
   </div>
   <div class="cert-body">
     <button class="print-btn" onclick="window.print()">🖨 הדפס / שמור PDF</button>

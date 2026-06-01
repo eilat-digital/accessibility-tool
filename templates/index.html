@@ -412,7 +412,7 @@
 <!-- ═══ Sidebar ═══ -->
 <aside class="sidebar" role="complementary" aria-label="תפריט ניווט">
   <div class="sidebar-brand">
-    <img src="/assets/stamp.png" alt="לוגו עיריית אילת" onerror="this.style.display='none'">
+    <img src="/assets/stamp.png" alt="לוגו עיריית אילת" style="height:56px;width:auto" onerror="this.style.display='none'">
     <h1>עיריית אילת</h1>
     <span>אגף הנגישות</span>
   </div>
@@ -421,7 +421,8 @@
       <span class="material-icons" aria-hidden="true">dashboard</span>
       לוח בקרה
     </a>
-    <a href="#history-section" class="nav-item">
+    <a href="#history-section" class="nav-item"
+       onclick="document.getElementById('history-section').scrollIntoView({behavior:'smooth'});return false;">
       <span class="material-icons" aria-hidden="true">history</span>
       היסטוריית מסמכים
     </a>
@@ -610,11 +611,9 @@
           <div class="doc-line-sm" style="width:60%"></div>
           <div class="doc-body"></div>
           <div class="stamp-preview">
-            <div class="stamp-preview-text">
-              <strong>עיריית אילת</strong>
-              <span>מסמך נגיש IS 5568</span>
-            </div>
-            <img src="/assets/stamp.png" alt="חותמת" style="height:28px;width:auto" onerror="this.style.display='none'">
+            <img src="/assets/stamp.png" alt="חותמת נגישות עיריית אילת"
+                 style="height:32px;width:auto"
+                 onerror="this.outerHTML='<div style=\'font-size:10px;font-weight:800;color:#4a7c59\'>מסמך נגיש<br><span style=\'font-size:8px;color:#6b7280\'>עיריית אילת IS 5568</span></div>'">
           </div>
         </div>
         <p style="font-size:11px;color:var(--gray-3);text-align:center;margin-top:12px;line-height:1.5">
@@ -841,11 +840,16 @@ function toggleSelectAll(checked) {
 async function deleteSelected() {
   const selected = [...document.querySelectorAll('.row-check:checked')];
   if (!selected.length) return;
-  if (!confirm(`למחוק ${selected.length} מסמכים?`)) return;
+  const ok = window.confirm(`למחוק ${selected.length} מסמכים? פעולה זו אינה הפיכה.`);
+  if (!ok) return;
   const ids = selected.map(c => c.dataset.id);
+  const btn = document.getElementById('btn-delete-selected');
+  btn.disabled = true;
+  btn.textContent = 'מוחק...';
   await Promise.all(ids.map(id => fetch(`/api/delete/${id}`, {method:'DELETE'})));
   document.getElementById('select-all').checked = false;
-  document.getElementById('btn-delete-selected').style.display = 'none';
+  btn.style.display = 'none';
+  btn.disabled = false;
   loadHistory();
 }
 
