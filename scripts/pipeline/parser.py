@@ -82,6 +82,61 @@ def _is_bold_font(font_name: str) -> bool:
 
 _CID_SKIP_RATIO = 0.4  # skip block if >40% is CID garbage
 
+_HEB_CHAR    = re.compile(r'[א-ת]')
+_FINAL_FORMS = set('ךםןףץ')  # ך ם ן ף ץ
+# מילים עבריות נפוצות בסדר ויזואלי (הפוך) — כל אחת כאן = אות ויזואלית
+_VISUAL_WORDS = {
+    'לש','לע','לכ','יכ','מע',
+    'מא','מג','קר','נכ','אוה',
+    'מה','שי','תא','לב','למ',
+    'יתלא','תליא',
+    'הפוקת','לועיפ',
+    'רואית',
+}
+
+
+def _page_is_visual_hebrew(all_text: str) -> bool:
+    """Detect if an entire page has visual-order Hebrew.
+    Uses two signals:
+    1. Final-form letter not at word end (impossible in logical order)
+    2. Common reversed words present"""
+    tokens = all_text.split()
+    if not tokens:
+        return False
+    visual = 0
+    total_heb = 0
+    for tok in tokens:
+        heb = [c for c in tok if _HEB_CHAR.match(c)]
+        if not heb:
+            continue
+        total_heb += 1
+        # Signal 1: final form not at end
+        for c in tok[:-1]:
+            if c in _FINAL_FORMS:
+                visual += 1
+                break
+        # Signal 2: recognised visual-order word
+        if tok in _VISUAL_WORDS:
+            visual += 1
+    if total_heb == 0:
+        return False
+    return visual / total_heb >= 0.15
+
+
+def _fix_line_visual(text: str) -> str:
+    """Reverse chars and word order for one line of visual-order Hebrew."""
+    tokens = text.split()
+    fixed = [tok[::-1] if _HEB_CHAR.search(tok) else tok for tok in tokens]
+    return ' '.join(reversed(fixed))
+
+
+def _fix_visual_hebrew(text: str) -> str:
+    """Apply fix to a single line (called only when page is known visual-order)."""
+    if not _HEB_CHAR.search(text):
+        return text
+    return _fix_line_visual(text)
+
+
 
 def _line_to_block(line: LTTextLine, page_height: float, page_num: int) -> Optional[TextBlock]:
     raw = line.get_text().strip()
@@ -147,18 +202,30 @@ def extract_blocks(pdf_path: str) -> List[TextBlock]:
         for page_num, page_layout in enumerate(extract_pages(pdf_path), 1):
             page_height: float = page_layout.height
 
+            # ── שלב 1: חלץ כל הטקסט מהעמוד כדי לזהות סדר ויזואלי ──────────
+            raw_page_lines: List = []
             for element in page_layout:
                 if not isinstance(element, LTTextBox):
                     continue
-
                 for line in element:
-                    if not isinstance(line, LTTextLine):
-                        continue
-                    block = _line_to_block(line, page_height, page_num)
-                    if block:
-                        blocks.append(block)
+                    if isinstance(line, LTTextLine):
+                        raw_page_lines.append(line)
+
+            page_raw_text = ' '.join(
+                _clean_cid(ln.get_text().strip())
+                for ln in raw_page_lines
+            )
+            is_visual = _page_is_visual_hebrew(page_raw_text)
+
+            # ── שלב 2: בנה בלוקים עם תיקון במידת הצורך ────────────────────
+            for line in raw_page_lines:
+                block = _line_to_block(line, page_height, page_num)
+                if block:
+                    if is_visual and _HEB_CHAR.search(block.text):
+                        block = block._replace(text=_fix_line_visual(block.text))
+                    blocks.append(block)
+
     except Exception:
-        # Corrupted PDF or missing pdfminer feature — return whatever we got
         pass
 
     return sort_layout_blocks(blocks)
