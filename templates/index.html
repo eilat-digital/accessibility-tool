@@ -422,7 +422,7 @@
       לוח בקרה
     </a>
     <a href="#history-section" class="nav-item"
-       onclick="document.getElementById('history-section').scrollIntoView({behavior:'smooth'});return false;">
+       onclick="event.preventDefault();const el=document.getElementById('history-section');const y=el.getBoundingClientRect().top+window.scrollY-20;window.scrollTo({top:y,behavior:'smooth'});">
       <span class="material-icons" aria-hidden="true">history</span>
       היסטוריית מסמכים
     </a>
