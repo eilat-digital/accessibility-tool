@@ -1254,32 +1254,32 @@ def get_report_html(job_id):
 <title>דוח נגישות — {d['name']}</title>
 <link href="https://fonts.googleapis.com/css2?family=Nunito+Sans:wght@400;600;700;800&display=swap" rel="stylesheet">
 <style>
-  :root{{--primary:#4a7c59;--primary-c:#d4e3d6;--amber:#705c30;--bg:#faf6f0;--card:#fff;--text:#1b1c18;--muted:#6b7280;}}
-  body{{font-family:'Nunito Sans',Arial,sans-serif;background:var(--bg);color:var(--text);margin:0;padding:24px;direction:rtl}}
-  .cert{{background:var(--card);border-radius:20px;max-width:700px;margin:0 auto;overflow:hidden;box-shadow:0 4px 20px rgba(46,50,48,.08)}}
-  .cert-header{{background:linear-gradient(135deg,var(--primary),#6aaf7d);color:#fff;padding:28px 32px 22px;display:flex;align-items:center;gap:16px}}
-  .cert-header-text h1{{margin:0 0 4px;font-size:20px;font-weight:800}}
-  .cert-header-text p{{margin:0;opacity:.85;font-size:12px;font-weight:600}}
-  .cert-header-stamp{{height:36px;width:auto;opacity:.9}}
-  .cert-body{{padding:28px 32px}}
-  .ref{{display:inline-flex;align-items:center;gap:8px;background:var(--primary-c);color:var(--primary);border-radius:99px;padding:5px 16px;font-size:12px;font-weight:800;margin-bottom:22px;letter-spacing:.04em}}
-  .meta-grid{{display:grid;grid-template-columns:1fr 1fr;gap:10px 28px;margin-bottom:24px;background:var(--bg);border-radius:12px;padding:16px}}
-  .meta-item{{font-size:13px;font-weight:600}}
-  .meta-label{{color:var(--muted);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;margin-bottom:3px}}
-  .score-box{{text-align:center;background:{score_bg};border:2px solid {score_color};border-radius:16px;padding:20px;margin-bottom:24px}}
-  .score-num{{font-size:56px;font-weight:800;color:{score_color};line-height:1}}
-  .score-label{{font-size:14px;font-weight:800;color:{score_color};margin-top:6px}}
-  .score-sub{{font-size:11px;color:var(--muted);margin-top:3px;font-weight:600}}
-  .standards{{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:24px}}
-  .std-chip{{background:var(--primary-c);color:var(--primary);border-radius:99px;padding:4px 14px;font-size:11px;font-weight:800}}
-  .section-title{{font-size:12px;font-weight:800;color:var(--primary);text-transform:uppercase;letter-spacing:.08em;border-bottom:2px solid var(--primary-c);padding-bottom:6px;margin:0 0 12px}}
-  ul{{margin:0 0 20px;padding-right:20px}}
-  li{{font-size:13px;margin-bottom:5px;color:var(--text);font-weight:600}}
-  li::marker{{color:var(--primary)}}
+  :root{{--p:#4a7c59;--pc:#d4e3d6;--pd:#2d5c3a;--bg:#faf6f0;--bg2:#f2ede6;--text:#1b1c18;--muted:#6b7280;}}
+  *{{box-sizing:border-box;margin:0;padding:0}}
+  body{{font-family:'Nunito Sans',Arial,sans-serif;background:var(--bg);color:var(--text);padding:20px;direction:rtl}}
+  .cert{{background:var(--bg);border-radius:20px;max-width:680px;margin:0 auto;overflow:hidden;border:1px solid var(--pc)}}
+  .cert-header{{background:linear-gradient(135deg,var(--p) 0%,#6aaf7d 100%);color:#fff;padding:24px 28px 20px}}
+  .cert-header h1{{font-size:19px;font-weight:800;margin-bottom:3px}}
+  .cert-header p{{font-size:11px;opacity:.85;font-weight:600}}
+  .cert-body{{padding:24px 28px}}
+  .ref{{display:inline-flex;align-items:center;gap:6px;background:var(--pc);color:var(--p);border-radius:99px;padding:4px 14px;font-size:11px;font-weight:800;margin-bottom:20px}}
+  .meta-grid{{display:grid;grid-template-columns:1fr 1fr;gap:8px 24px;margin-bottom:20px;background:var(--bg2);border-radius:12px;padding:14px}}
+  .meta-label{{color:var(--muted);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;margin-bottom:2px}}
+  .meta-val{{font-size:13px;font-weight:700;color:var(--text)}}
+  .score-box{{text-align:center;background:{score_bg};border:2px solid {score_color};border-radius:14px;padding:18px;margin-bottom:20px}}
+  .score-num{{font-size:52px;font-weight:800;color:{score_color};line-height:1}}
+  .score-lbl{{font-size:13px;font-weight:800;color:{score_color};margin-top:5px}}
+  .score-sub{{font-size:11px;color:var(--muted);margin-top:2px}}
+  .chips{{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:20px}}
+  .chip{{background:var(--pc);color:var(--p);border-radius:99px;padding:3px 12px;font-size:11px;font-weight:800}}
+  .sec-title{{font-size:11px;font-weight:800;color:var(--p);text-transform:uppercase;letter-spacing:.08em;border-bottom:2px solid var(--pc);padding-bottom:5px;margin:0 0 10px}}
+  ul{{padding-right:18px;margin-bottom:18px}}
+  li{{font-size:12px;margin-bottom:4px;font-weight:600;color:var(--text)}}
+  li::marker{{color:var(--p)}}
   li.err{{color:#b91c1c}} li.wrn{{color:#92400e}}
-  .cert-footer{{background:var(--bg);border-top:1px solid var(--primary-c);padding:14px 32px;font-size:11px;color:var(--muted);display:flex;justify-content:space-between;align-items:center;font-weight:700}}
-  .print-btn{{background:var(--primary);color:#fff;border:none;border-radius:10px;padding:9px 22px;font-family:inherit;font-size:13px;font-weight:700;cursor:pointer;margin-bottom:18px;box-shadow:0 4px 12px rgba(74,124,89,.25)}}
-  .print-btn:hover{{background:#3d6b4c}}
+  .cert-footer{{background:var(--bg2);border-top:1px solid var(--pc);padding:12px 28px;font-size:10px;color:var(--muted);display:flex;justify-content:space-between;align-items:center;font-weight:700}}
+  .print-btn{{background:var(--p);color:#fff;border:none;border-radius:10px;padding:8px 20px;font-family:inherit;font-size:12px;font-weight:700;cursor:pointer;margin-bottom:16px;box-shadow:0 3px 10px rgba(74,124,89,.2)}}
+  .print-btn:hover{{background:var(--pd)}}
   @media print{{.print-btn{{display:none}}}}
 </style>
 </head>
@@ -1295,25 +1295,25 @@ def get_report_html(job_id):
     <button class="print-btn" onclick="window.print()">🖨 הדפס / שמור PDF</button>
     <div class="ref">📋 מספר אסמכתא: {d['ref_num']}</div>
     <div class="meta-grid">
-      <div class="meta-item"><div class="meta-label">שם המסמך</div>{d['name']}</div>
-      <div class="meta-item"><div class="meta-label">תאריך עיבוד</div>{d['date']} {d['time']}</div>
-      <div class="meta-item"><div class="meta-label">עמודים</div>{d['pages']}</div>
-      <div class="meta-item"><div class="meta-label">זמן עיבוד</div>{d['proc_time']} שניות</div>
+      <div><div class="meta-label">שם המסמך</div><div class="meta-val">{d['name'][:50]}</div></div>
+      <div><div class="meta-label">תאריך עיבוד</div><div class="meta-val">{d['date']} {d['time']}</div></div>
+      <div><div class="meta-label">עמודים</div><div class="meta-val">{d['pages']}</div></div>
+      <div><div class="meta-label">זמן עיבוד</div><div class="meta-val">{d['proc_time']} שניות</div></div>
     </div>
     <div class="score-box">
       <div class="score-num">{d['score']}</div>
-      <div class="score-label">{d['status_heb']}</div>
+      <div class="score-lbl">{d['status_heb']}</div>
       <div class="score-sub">ציון נגישות מתוך 100</div>
     </div>
-    <div class="standards">
-      <span class="std-chip">✓ IS 5568</span>
-      <span class="std-chip">✓ WCAG 2.1 AA</span>
-      <span class="std-chip">✓ PDF/UA-1</span>
-      <span class="std-chip">✓ RTL עברית</span>
+    <div class="chips">
+      <span class="chip">✓ IS 5568</span>
+      <span class="chip">✓ WCAG 2.1 AA</span>
+      <span class="chip">✓ PDF/UA-1</span>
+      <span class="chip">✓ RTL עברית</span>
     </div>
-    <div class="section-title">פעולות שבוצעו</div>
+    <div class="sec-title">פעולות שבוצעו</div>
     <ul>{actions_html}</ul>
-    {'<div class="section-title">הערות</div><ul>' + errors_html + warns_html + '</ul>' if d['errors'] or d['warnings'] else ''}
+    {'<div class="sec-title">הערות</div><ul>' + errors_html + warns_html + '</ul>' if d['errors'] or d['warnings'] else ''}
   </div>
   <div class="cert-footer">
     <span>הופק על-ידי מערכת הנגשת מסמכים — עיריית אילת</span>
