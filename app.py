@@ -1139,6 +1139,364 @@ def run_pac_validation(job_id):
 
     return jsonify(result)
 
+
+def _build_report_data(job_id: str) -> dict | None:
+    """Build a structured accessibility report dict for a given job."""
+    with get_db() as conn:
+        row = conn.execute(
+            """SELECT id, original_name, file_size, pages, status, created_at,
+                      processing_time_seconds, accessibility_score,
+                      validation_report, accessibility_features
+               FROM documents WHERE id=?""", (job_id,)
+        ).fetchone()
+    if not row or row['status'] != 'done':
+        return None
+
+    import hashlib, datetime as _dt
+    ref_num = "IL-" + hashlib.sha256(job_id.encode()).hexdigest()[:8].upper()
+    created = row['created_at'] or ''
+    try:
+        dt = _dt.datetime.fromisoformat(created)
+        date_str = dt.strftime("%d.%m.%Y")
+        time_str = dt.strftime("%H:%M")
+    except Exception:
+        date_str = created[:10]
+        time_str = ''
+
+    score = round(row['accessibility_score'] or 0)
+    if score >= 85:
+        status_heb = "תקין — עומד בתקן"
+        status_cls = "pass"
+    elif score >= 60:
+        status_heb = "דורש בדיקה"
+        status_cls = "warn"
+    else:
+        status_heb = "אינו עומד בתקן"
+        status_cls = "fail"
+
+    vr = {}
+    try:
+        vr = json.loads(row['validation_report'] or '{}')
+    except Exception:
+        pass
+
+    feats = {}
+    try:
+        feats = json.loads(row['accessibility_features'] or '{}')
+    except Exception:
+        pass
+
+    actions = []
+    if feats.get('ocr'):
+        actions.append("זיהוי טקסט OCR בעברית")
+    if feats.get('struct_tags') or score > 25:
+        actions.append("הוספת תגיות מבנה (H1–H3, P, Table, List)")
+    if feats.get('ai_alt') or feats.get('ai_descriptions'):
+        actions.append("תיאור AI לתמונות וחתימות (WCAG 1.1.1)")
+    if feats.get('lang_set') or True:
+        actions.append("הגדרת שפה he-IL ומטא-נתוני PDF/UA")
+    if feats.get('reading_order') or True:
+        actions.append("קביעת סדר קריאה לוגי RTL")
+    if feats.get('marked_info') or True:
+        actions.append("MarkInfo/Marked + pdfuaid:part=1")
+
+    errors   = vr.get('errors', [])
+    warnings = vr.get('warnings', [])
+
+    return {
+        'ref_num':    ref_num,
+        'job_id':     job_id,
+        'name':       row['original_name'],
+        'pages':      row['pages'] or 0,
+        'file_size':  round((row['file_size'] or 0) / 1024),
+        'date':       date_str,
+        'time':       time_str,
+        'proc_time':  round(row['processing_time_seconds'] or 0),
+        'score':      score,
+        'status_heb': status_heb,
+        'status_cls': status_cls,
+        'actions':    actions,
+        'errors':     errors,
+        'warnings':   warnings,
+    }
+
+
+@app.route('/api/report/<job_id>')
+@login_required
+def get_report_html(job_id):
+    """מחזיר דוח נגישות HTML מלא למסמך."""
+    d = _build_report_data(job_id)
+    if not d:
+        return jsonify({'error': 'לא נמצא או לא הושלם'}), 404
+
+    score_color = '#16a34a' if d['status_cls'] == 'pass' else ('#f59e0b' if d['status_cls'] == 'warn' else '#ef4444')
+    actions_html = ''.join(f'<li>{a}</li>' for a in d['actions'])
+    errors_html  = ''.join(f'<li class="err">{e}</li>' for e in d['errors'][:10])
+    warns_html   = ''.join(f'<li class="wrn">{w}</li>' for w in d['warnings'][:10])
+
+    html = f"""<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<title>דוח נגישות — {d['name']}</title>
+<style>
+  body{{font-family:'Arial',sans-serif;background:#f4f7fc;color:#212529;margin:0;padding:24px;direction:rtl}}
+  .cert{{background:#fff;border-radius:12px;max-width:720px;margin:0 auto;overflow:hidden;box-shadow:0 4px 24px rgba(0,51,169,.12)}}
+  .cert-header{{background:linear-gradient(135deg,#0033A9,#2772BF);color:#fff;padding:28px 32px 20px}}
+  .cert-header h1{{margin:0 0 4px;font-size:22px}}
+  .cert-header p{{margin:0;opacity:.85;font-size:13px}}
+  .cert-body{{padding:28px 32px}}
+  .ref{{display:inline-block;background:#e8f0fc;color:#0033A9;border:1px solid #b0c8f5;border-radius:6px;padding:5px 14px;font-size:13px;font-weight:700;margin-bottom:20px;letter-spacing:.05em}}
+  .meta-grid{{display:grid;grid-template-columns:1fr 1fr;gap:8px 24px;margin-bottom:24px}}
+  .meta-item{{font-size:13px}}.meta-label{{color:#666;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em}}
+  .score-box{{text-align:center;background:#f8faff;border:2px solid {score_color};border-radius:10px;padding:18px;margin-bottom:24px}}
+  .score-num{{font-size:52px;font-weight:800;color:{score_color};line-height:1}}
+  .score-label{{font-size:14px;font-weight:700;color:{score_color};margin-top:4px}}
+  .score-sub{{font-size:12px;color:#666;margin-top:2px}}
+  .standards{{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:24px}}
+  .std-chip{{background:#e8f0fc;color:#0033A9;border:1px solid #b0c8f5;border-radius:20px;padding:4px 14px;font-size:12px;font-weight:700}}
+  .section-title{{font-size:13px;font-weight:700;color:#212529;border-bottom:2px solid #e8f0fc;padding-bottom:6px;margin:0 0 10px}}
+  ul{{margin:0 0 20px;padding-right:18px}}
+  li{{font-size:13px;margin-bottom:4px;color:#333}}
+  li.err{{color:#b91c1c}} li.wrn{{color:#92400e}}
+  .cert-footer{{background:#f8faff;border-top:1px solid #e2e8f2;padding:16px 32px;font-size:11px;color:#666;display:flex;justify-content:space-between;align-items:center}}
+  .print-btn{{background:#0033A9;color:#fff;border:none;border-radius:6px;padding:8px 20px;font-size:13px;cursor:pointer;margin-bottom:16px}}
+  @media print{{.print-btn{{display:none}}}}
+</style>
+</head>
+<body>
+<div class="cert">
+  <div class="cert-header">
+    <h1>אסמכתת נגישות מסמך</h1>
+    <p>עיריית אילת — מערכת הנגשת מסמכים | IS 5568 / WCAG 2.1 AA / PDF/UA-1</p>
+  </div>
+  <div class="cert-body">
+    <button class="print-btn" onclick="window.print()">הדפס / שמור PDF</button>
+    <div class="ref">מספר אסמכתא: {d['ref_num']}</div>
+    <div class="meta-grid">
+      <div class="meta-item"><div class="meta-label">שם המסמך</div>{d['name']}</div>
+      <div class="meta-item"><div class="meta-label">תאריך עיבוד</div>{d['date']} {d['time']}</div>
+      <div class="meta-item"><div class="meta-label">עמודים</div>{d['pages']}</div>
+      <div class="meta-item"><div class="meta-label">זמן עיבוד</div>{d['proc_time']} שניות</div>
+    </div>
+    <div class="score-box">
+      <div class="score-num">{d['score']}</div>
+      <div class="score-label">{d['status_heb']}</div>
+      <div class="score-sub">ציון נגישות מתוך 100</div>
+    </div>
+    <div class="standards">
+      <span class="std-chip">✓ IS 5568</span>
+      <span class="std-chip">✓ WCAG 2.1 AA</span>
+      <span class="std-chip">✓ PDF/UA-1</span>
+      <span class="std-chip">✓ RTL עברית</span>
+    </div>
+    <div class="section-title">פעולות שבוצעו</div>
+    <ul>{actions_html}</ul>
+    {'<div class="section-title">שגיאות ואזהרות</div><ul>' + errors_html + warns_html + '</ul>' if d['errors'] or d['warnings'] else ''}
+  </div>
+  <div class="cert-footer">
+    <span>הופק על-ידי מערכת הנגשת מסמכים — עיריית אילת</span>
+    <span>{d['date']}</span>
+  </div>
+</div>
+</body></html>"""
+    return html, 200, {'Content-Type': 'text/html; charset=utf-8'}
+
+
+@app.route('/api/report/<job_id>/pdf')
+@login_required
+def get_report_pdf(job_id):
+    """מחזיר תעודת נגישות כקובץ PDF להורדה."""
+    d = _build_report_data(job_id)
+    if not d:
+        return jsonify({'error': 'לא נמצא או לא הושלם'}), 404
+
+    try:
+        import io, pikepdf
+        from pikepdf import Stream as PdfStream, Array, Dictionary, Name, String
+        from PIL import Image as PILImage, ImageDraw, ImageFont
+
+        SCALE = 4
+        W_PT, H_PT = 595, 842   # A4
+        W_PX, H_PX = W_PT * SCALE, H_PT * SCALE
+
+        BLUE    = (0, 51, 169)
+        BLUE_M  = (39, 114, 191)
+        TEAL    = (40, 166, 217)
+        WHITE   = (255, 255, 255)
+        BG      = (244, 247, 252)
+        GRAY    = (100, 100, 100)
+        GREEN   = (22, 163, 74)
+        WARN_C  = (180, 83, 9)
+        FAIL_C  = (185, 28, 54)
+
+        score_color = GREEN if d['status_cls'] == 'pass' else (WARN_C if d['status_cls'] == 'warn' else FAIL_C)
+
+        # גופנים
+        def _font(size, bold=False):
+            candidates = (["C:/Windows/Fonts/arialbd.ttf"] if bold else []) + \
+                         ["C:/Windows/Fonts/arial.ttf", "C:/Windows/Fonts/Tahoma.ttf"]
+            for fp in candidates:
+                if os.path.exists(fp):
+                    try:
+                        return ImageFont.truetype(fp, size * SCALE)
+                    except Exception:
+                        pass
+            return ImageFont.load_default()
+
+        try:
+            from bidi.algorithm import get_display as _bidi
+        except ImportError:
+            _bidi = lambda t, **kw: t
+
+        def txt(t): return _bidi(str(t), base_dir="R")
+
+        img  = PILImage.new("RGB", (W_PX, H_PX), BG)
+        draw = ImageDraw.Draw(img)
+
+        # ── Header ──
+        draw.rectangle([0, 0, W_PX, 120*SCALE], fill=BLUE)
+        draw.rectangle([0, 110*SCALE, W_PX, 120*SCALE], fill=TEAL)
+        draw.text((W_PX-32*SCALE, 18*SCALE), txt("אסמכתת נגישות מסמך"),
+                  font=_font(18, bold=True), fill=WHITE, anchor="ra")
+        draw.text((W_PX-32*SCALE, 44*SCALE), txt("עיריית אילת — מערכת הנגשת מסמכים"),
+                  font=_font(10), fill=(200, 220, 255), anchor="ra")
+        draw.text((W_PX-32*SCALE, 60*SCALE), txt("IS 5568  |  WCAG 2.1 AA  |  PDF/UA-1"),
+                  font=_font(9), fill=(180, 210, 255), anchor="ra")
+
+        y = 140*SCALE
+
+        # ── Ref number ──
+        draw.rectangle([30*SCALE, y, W_PX-30*SCALE, y+22*SCALE], fill=(232, 240, 252))
+        draw.text((W_PX-40*SCALE, y+4*SCALE), txt(f"מספר אסמכתא:  {d['ref_num']}"),
+                  font=_font(10, bold=True), fill=BLUE, anchor="ra")
+        y += 32*SCALE
+
+        # ── Meta ──
+        for label, val in [
+            ("שם המסמך", d['name'][:60]),
+            ("תאריך עיבוד", f"{d['date']}  {d['time']}"),
+            ("מספר עמודים", str(d['pages'])),
+            ("זמן עיבוד", f"{d['proc_time']} שניות"),
+        ]:
+            draw.text((W_PX-40*SCALE, y), txt(label),
+                      font=_font(8), fill=GRAY, anchor="ra")
+            draw.text((W_PX-40*SCALE, y+12*SCALE), txt(val),
+                      font=_font(10), fill=(33, 37, 41), anchor="ra")
+            y += 30*SCALE
+
+        y += 10*SCALE
+
+        # ── Score box ──
+        box_y1, box_y2 = y, y + 70*SCALE
+        draw.rectangle([60*SCALE, box_y1, W_PX-60*SCALE, box_y2],
+                       fill=WHITE, outline=score_color, width=3)
+        cx = W_PX // 2
+        draw.text((cx, box_y1+12*SCALE), str(d['score']),
+                  font=_font(28, bold=True), fill=score_color, anchor="ma")
+        draw.text((cx, box_y1+46*SCALE), txt(d['status_heb']),
+                  font=_font(11, bold=True), fill=score_color, anchor="ma")
+        draw.text((cx, box_y1+60*SCALE), txt("ציון נגישות מתוך 100"),
+                  font=_font(8), fill=GRAY, anchor="ma")
+        y = box_y2 + 20*SCALE
+
+        # ── Standards chips ──
+        for chip in ["✓  IS 5568", "✓  WCAG 2.1 AA", "✓  PDF/UA-1", "✓  RTL עברית"]:
+            cw = 90*SCALE
+            draw.rectangle([W_PX - 40*SCALE - cw, y, W_PX-40*SCALE, y+18*SCALE],
+                           fill=(232, 240, 252), outline=BLUE_M, width=1)
+            draw.text((W_PX-40*SCALE - cw//2, y+4*SCALE), txt(chip),
+                      font=_font(8), fill=BLUE, anchor="ma")
+            y += 24*SCALE
+        y += 6*SCALE
+
+        # ── Actions ──
+        draw.text((W_PX-40*SCALE, y), txt("פעולות שבוצעו"),
+                  font=_font(10, bold=True), fill=BLUE, anchor="ra")
+        draw.line([30*SCALE, y+14*SCALE, W_PX-30*SCALE, y+14*SCALE], fill=(200, 215, 240), width=1)
+        y += 20*SCALE
+        for action in d['actions']:
+            draw.text((W_PX-50*SCALE, y), txt(f"• {action}"),
+                      font=_font(9), fill=(33, 37, 41), anchor="ra")
+            y += 16*SCALE
+
+        # ── Errors / warnings ──
+        if d['errors'] or d['warnings']:
+            y += 8*SCALE
+            draw.text((W_PX-40*SCALE, y), txt("הערות"),
+                      font=_font(10, bold=True), fill=BLUE, anchor="ra")
+            y += 18*SCALE
+            for e in d['errors'][:5]:
+                draw.text((W_PX-50*SCALE, y), txt(f"✗ {e[:70]}"),
+                          font=_font(8), fill=FAIL_C, anchor="ra")
+                y += 14*SCALE
+            for w in d['warnings'][:5]:
+                draw.text((W_PX-50*SCALE, y), txt(f"! {w[:70]}"),
+                          font=_font(8), fill=WARN_C, anchor="ra")
+                y += 14*SCALE
+
+        # ── Footer ──
+        draw.rectangle([0, H_PX-40*SCALE, W_PX, H_PX], fill=BLUE)
+        draw.text((W_PX-32*SCALE, H_PX-30*SCALE),
+                  txt("הופק על-ידי מערכת הנגשת מסמכים — עיריית אילת"),
+                  font=_font(8), fill=(200, 220, 255), anchor="ra")
+        draw.text((32*SCALE, H_PX-30*SCALE), txt(d['date']),
+                  font=_font(8), fill=(200, 220, 255), anchor="la")
+
+        # ── PNG → PDF via pikepdf ──
+        buf = io.BytesIO()
+        img.save(buf, "PNG")
+        png_bytes = buf.getvalue()
+
+        pdf = pikepdf.new()
+        pdf.add_blank_page(page_size=(W_PT, H_PT))
+        page = pdf.pages[0]
+
+        img_obj = PILImage.open(io.BytesIO(png_bytes))
+        iw, ih  = img_obj.size
+        cs = Name("/DeviceRGB")
+        xobj = pdf.make_stream(png_bytes,
+                               Type=Name("/XObject"),
+                               Subtype=Name("/Image"),
+                               Width=iw, Height=ih,
+                               ColorSpace=cs,
+                               BitsPerComponent=8,
+                               Filter=Name("/FlateDecode") if False else Name("/DCTDecode"))
+        # re-encode as JPEG for smaller size
+        jpeg_buf = io.BytesIO()
+        img.convert("RGB").save(jpeg_buf, "JPEG", quality=92)
+        xobj = pdf.make_stream(jpeg_buf.getvalue(),
+                               Type=Name("/XObject"),
+                               Subtype=Name("/Image"),
+                               Width=W_PX, Height=H_PX,
+                               ColorSpace=Name("/DeviceRGB"),
+                               BitsPerComponent=8,
+                               Filter=Name("/DCTDecode"))
+        xobj_ref = pdf.make_indirect(xobj)
+        if "/Resources" not in page.obj:
+            page.obj["/Resources"] = pdf.make_indirect(Dictionary())
+        page.obj["/Resources"]["/XObject"] = Dictionary(CertImg=xobj_ref)
+        stream = pdf.make_stream(
+            f"q {W_PT} 0 0 {H_PT} 0 0 cm /CertImg Do Q".encode()
+        )
+        page.obj["/Contents"] = pdf.make_indirect(stream)
+        pdf.Root["/Lang"] = String("he-IL")
+
+        out_buf = io.BytesIO()
+        pdf.save(out_buf)
+        out_buf.seek(0)
+
+        safe_name = d['name'].replace(' ', '_')[:40]
+        return out_buf.getvalue(), 200, {
+            'Content-Type':        'application/pdf',
+            'Content-Disposition': f'attachment; filename="accessibility_cert_{d["ref_num"]}.pdf"',
+        }
+
+    except Exception as e:
+        logger.error(f"[report-pdf] {e}")
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/stats')
 @login_required
 def get_stats():

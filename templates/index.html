@@ -1275,6 +1275,7 @@ function renderHistory(docs) {
 
     const actions = d.status === 'done'
       ? `<button class="btn-sm primary" onclick="window.location='/api/download/${d.id}'">הורדה</button>
+         <button class="btn-sm" style="background:#e6f4ec;color:#16a34a;border:1px solid #86efac" onclick="openReport('${d.id}')">📋 דוח</button>
          <button class="btn-sm" style="background:var(--blue-s);color:var(--blue)" onclick="openReview('${d.id}','${d.original_name.replace(/'/g,"\\'")}')">סקור מבנה</button>
          <button class="btn-sm" style="background:#e6f4f5;color:var(--teal);border:1px solid #b2dde0" onclick="runPacCheck('${d.id}',this)" title="בדיקת PAC 2024">PAC ✓</button>
          <button class="btn-sm" style="background:#fff0e8;color:#c05000;border:1px solid #f5a87a" onclick="reprocessDoc('${d.id}')">↺ הנגשה מחדש</button>
@@ -1407,6 +1408,32 @@ async function reprocessDoc(id) {
     alert('שגיאת רשת: ' + e.message);
     console.error('reprocess error:', e);
   }
+}
+
+/* ── Report modal ── */
+function openReport(id) {
+  let modal = document.getElementById('report-modal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'report-modal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:900;display:flex;align-items:center;justify-content:center;padding:16px';
+    modal.innerHTML = `
+      <div style="background:#fff;border-radius:14px;max-width:760px;width:100%;max-height:90vh;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+        <div style="background:linear-gradient(135deg,#0033A9,#2772BF);color:#fff;padding:16px 24px;display:flex;justify-content:space-between;align-items:center">
+          <strong style="font-size:15px">📋 דוח נגישות</strong>
+          <div style="display:flex;gap:8px">
+            <button id="report-dl-btn" style="background:rgba(255,255,255,.2);color:#fff;border:1px solid rgba(255,255,255,.4);border-radius:6px;padding:6px 14px;cursor:pointer;font-size:12px">⬇ הורד תעודה PDF</button>
+            <button onclick="document.getElementById('report-modal').remove()" style="background:rgba(255,255,255,.15);color:#fff;border:none;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:16px">✕</button>
+          </div>
+        </div>
+        <iframe id="report-frame" style="flex:1;border:none;min-height:520px"></iframe>
+      </div>`;
+    modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+    document.body.appendChild(modal);
+  }
+  document.getElementById('report-frame').src = `/api/report/${id}`;
+  document.getElementById('report-dl-btn').onclick = () => window.location = `/api/report/${id}/pdf`;
+  document.getElementById('report-modal').style.display = 'flex';
 }
 
 async function updateStats() {
