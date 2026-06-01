@@ -1045,8 +1045,8 @@ def add_accessible_badge(pdf_path: str) -> None:
             mb = page.obj.get("/MediaBox")
             pw, ph = (float(mb[2]), float(mb[3])) if mb else (595.0, 842.0)
             MARGIN = 12.0
-            x = pw - W_PT - MARGIN
-            y = ph - H_PT - MARGIN
+            x = MARGIN                   # פינה שמאלית
+            y = ph - H_PT - MARGIN       # פינה עליונה
             bbox = f"[{x:.2f} {y:.2f} {x+W_PT:.2f} {y+H_PT:.2f}]"
             if "/Resources" not in page.obj:
                 page.obj["/Resources"] = pdf.make_indirect(Dictionary())
