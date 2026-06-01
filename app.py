@@ -771,6 +771,12 @@ def logout():
     return redirect(url_for('login'))
 
 
+@app.route('/assets/<path:filename>')
+def serve_asset(filename):
+    """מגיש קבצי assets (חותמת, לוגו וכו')"""
+    assets_dir = BASE_DIR / 'assets'
+    return send_file(assets_dir / filename)
+
 @app.route('/')
 @login_required
 def index():

@@ -588,6 +588,7 @@
               <tbody id="history-body">
                 <tr><td colspan="8"><div class="empty-history">טוען...</div></td></tr>
               </tbody>
+
             </table>
           </div>
         </div>
@@ -861,7 +862,7 @@ async function loadHistory() {
 function renderHistory(docs) {
   const tbody = document.getElementById('history-body');
   if (!docs.length) {
-    tbody.innerHTML = '<tr><td colspan="7"><div class="empty-history">אין מסמכים עדיין</div></td></tr>';
+    tbody.innerHTML = '<tr><td colspan="8"><div class="empty-history">אין מסמכים עדיין</div></td></tr>';
     return;
   }
   const LABELS = {
