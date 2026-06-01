@@ -549,7 +549,16 @@
         <div class="card">
           <div class="card-header">
             <h3>מסמכים אחרונים</h3>
-            <button class="btn-sm" onclick="loadHistory()" aria-label="רענן רשימה">רענן</button>
+            <div style="display:flex;gap:8px;align-items:center">
+              <button id="btn-delete-selected"
+                      class="btn-sm danger"
+                      style="display:none"
+                      onclick="deleteSelected()"
+                      aria-label="מחק מסמכים נבחרים">
+                🗑 מחק נבחרים (<span id="selected-count">0</span>)
+              </button>
+              <button class="btn-sm" onclick="loadHistory()" aria-label="רענן רשימה">רענן</button>
+            </div>
           </div>
           <div class="table-toolbar" role="search">
             <span class="material-icons" style="color:var(--gray-3);font-size:18px" aria-hidden="true">search</span>
@@ -562,6 +571,11 @@
             <table id="history-table" aria-label="מסמכים שהונגשו">
               <thead>
                 <tr>
+                  <th scope="col" style="width:40px">
+                    <input type="checkbox" id="select-all" aria-label="בחר הכל"
+                           onchange="toggleSelectAll(this.checked)"
+                           style="width:16px;height:16px;cursor:pointer;accent-color:var(--primary)">
+                  </th>
                   <th scope="col">שם המסמך</th>
                   <th scope="col">תאריך</th>
                   <th scope="col">עמודים</th>
@@ -572,7 +586,7 @@
                 </tr>
               </thead>
               <tbody id="history-body">
-                <tr><td colspan="7"><div class="empty-history">טוען...</div></td></tr>
+                <tr><td colspan="8"><div class="empty-history">טוען...</div></td></tr>
               </tbody>
             </table>
           </div>
@@ -805,6 +819,35 @@ function showFileWarning(msg, type) {
   setTimeout(() => { w.style.display = 'none'; }, 4000);
 }
 
+// ── Multi-select delete ───────────────────────────────────────
+function updateSelectionUI() {
+  const checks = [...document.querySelectorAll('.row-check')];
+  const selected = checks.filter(c => c.checked);
+  const btn = document.getElementById('btn-delete-selected');
+  const countEl = document.getElementById('selected-count');
+  const allBox = document.getElementById('select-all');
+  countEl.textContent = selected.length;
+  btn.style.display = selected.length > 0 ? 'inline-flex' : 'none';
+  allBox.indeterminate = selected.length > 0 && selected.length < checks.length;
+  allBox.checked = checks.length > 0 && selected.length === checks.length;
+}
+
+function toggleSelectAll(checked) {
+  document.querySelectorAll('.row-check').forEach(c => c.checked = checked);
+  updateSelectionUI();
+}
+
+async function deleteSelected() {
+  const selected = [...document.querySelectorAll('.row-check:checked')];
+  if (!selected.length) return;
+  if (!confirm(`למחוק ${selected.length} מסמכים?`)) return;
+  const ids = selected.map(c => c.dataset.id);
+  await Promise.all(ids.map(id => fetch(`/api/delete/${id}`, {method:'DELETE'})));
+  document.getElementById('select-all').checked = false;
+  document.getElementById('btn-delete-selected').style.display = 'none';
+  loadHistory();
+}
+
 // ── History ──────────────────────────────────────────────────
 async function loadHistory() {
   try {
@@ -873,7 +916,13 @@ function renderHistory(docs) {
       const dt = new Date(d.created_at);
       dateStr = dt.toLocaleDateString('he-IL') + ' ' + dt.toLocaleTimeString('he-IL',{hour:'2-digit',minute:'2-digit'});
     }
-    return `<tr>
+    return `<tr data-id="${d.id}">
+      <td>
+        <input type="checkbox" class="row-check" data-id="${d.id}"
+               aria-label="בחר מסמך ${name}"
+               onchange="updateSelectionUI()"
+               style="width:16px;height:16px;cursor:pointer;accent-color:var(--primary)">
+      </td>
       <td title="${d.original_name}" style="font-weight:600">${name.length > 38 ? name.slice(0,38)+'…' : name}</td>
       <td style="color:var(--gray-3);font-size:12px">${dateStr}</td>
       <td>${pages}</td>
